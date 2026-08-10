@@ -1,0 +1,29 @@
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
+[target.i686-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-args=/NODEFAULTLIB:MSVCRT"]
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]
+[target.'cfg(target_os="macos")']
+rustflags = [
+    "-C", "link-args=-sectcreate __CGPreLoginApp __cgpreloginapp /dev/null",
+    # LOCAL FORK: the ScreenCaptureKit backend (libs/scrap/src/sck) pulls in the
+    # `screencapturekit` crate, whose Swift bridge links the Swift concurrency
+    # runtime. Without this rpath the binary builds but dies at launch with
+    # "Library not loaded: @rpath/libswift_Concurrency.dylib".
+    #
+    # /usr/lib/swift is not a real directory on disk — it lives in the dyld shared
+    # cache, so `ls` shows nothing while `dyld_info` resolves it. It is present on
+    # every macOS 12+ system, which makes it the right rpath for a shipped app.
+    # Setting DYLD_LIBRARY_PATH instead would only fix `cargo run` on this machine
+    # and leave a packaged .app unable to launch.
+    "-C", "link-arg=-Wl,-rpath,/usr/lib/swift",
+]
+#[target.'cfg(target_os="linux")']
+# glibc-static required, this may fix https://github.com/rustdesk/rustdesk/issues/9103, but I do not want this big change
+# this is unlikely to help also, because the other so files still use libc dynamically
+#rustflags = [
+#    "-C", "link-args=-Wl,-Bstatic -lc -Wl,-Bdynamic"
+#]
+[net]
+git-fetch-with-cli = true

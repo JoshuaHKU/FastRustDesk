@@ -1,0 +1,33 @@
+FastRustDesk
+============
+
+This is an UNOFFICIAL fork of RustDesk.
+It is NOT affiliated with, endorsed by, or supported by RustDesk or Purslane Ltd.
+"RustDesk" is a trademark of Purslane Ltd; it appears in this project's name
+only to describe the software this work derives from.
+
+Upstream:  https://github.com/rustdesk/rustdesk
+Baseline:  v1.4.9 (commit 11190fa)
+License:   GNU Affero General Public License v3.0 (unchanged from upstream)
+
+Modifications made in this fork (summary; see README.md for detail):
+
+  * macOS screen capture moved from CGDisplayStream to ScreenCaptureKit;
+    minimum supported macOS raised from 10.14 to 12.3.
+  * macOS capture/encode path reworked: NV12 capture, zero-copy VideoToolbox
+    encoding, redundant frame comparison removed.
+  * "Accessible devices" reimplemented against the open-source ID server
+    instead of the commercial API.
+  * Account, device grouping and same-account passwordless access added,
+    requiring the companion FastRDServer.
+  * Quality monitor shows whether the session is direct or relayed.
+  * Windows installer file name can carry a port.
+  * Product renamed to FastRustDesk.
+
+Per AGPL-3.0 section 5, this file and README.md carry prominent notice that the
+work is modified and what was changed. Modified source files additionally carry
+`LOCAL FORK:` comments at each changed site explaining what differs from
+upstream and why.
+
+NO WARRANTY. This is a personal fork, provided as-is, with no commercial
+support of any kind. See sections 15 and 16 of the license.

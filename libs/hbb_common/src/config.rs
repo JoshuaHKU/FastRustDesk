@@ -810,6 +810,10 @@ impl Config {
     /// a non-empty directory fails (ENOTEMPTY / ERROR_DIR_NOT_EMPTY), which is
     /// exactly the interlock we want -- whoever loses the race just discards its
     /// temporary copy, and no process ever observes a partially filled dir.
+    // Same gate as its only caller below, and as the `patch()` /
+    // `copy_config_dir()` it depends on: Android and iOS keep their config
+    // somewhere else entirely and never had a legacy directory to migrate.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     fn migrate_legacy_config_dir(org: &str, app_name: &str, new_dir: &Path) {
         if app_name == Self::LEGACY_APP_NAME || new_dir.exists() {
             return;

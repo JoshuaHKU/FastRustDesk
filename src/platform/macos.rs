@@ -10,8 +10,9 @@ use cocoa::{
 };
 use core_foundation::{
     array::{CFArrayGetCount, CFArrayGetValueAtIndex},
+    base::TCFType,
     dictionary::CFDictionaryRef,
-    string::CFStringRef,
+    string::{CFString, CFStringRef},
 };
 use core_graphics::{
     display::{kCGNullWindowID, kCGWindowListOptionOnScreenOnly, CGWindowListCopyWindowInfo},
@@ -686,6 +687,10 @@ fn unsafe_get_cursor_data(hcursor: u64) -> ResultType<CursorData> {
     }
 }
 
+/// Owner of `/dev/console`, as name (`-l`) or uid (`-n`).
+///
+/// Kept only as a fallback for [`console_user_from_dynamic_store`] -- see the
+/// note there for why it cannot be the primary source.
 fn get_active_user(t: &str) -> String {
     if let Ok(output) = std::process::Command::new("ls")
         .args(vec![t, "/dev/console"])
@@ -700,11 +705,65 @@ fn get_active_user(t: &str) -> String {
     "".to_owned()
 }
 
+#[link(name = "SystemConfiguration", kind = "framework")]
+extern "C" {
+    fn SCDynamicStoreCopyConsoleUser(
+        store: *const c_void,
+        uid: *mut u32,
+        gid: *mut u32,
+    ) -> CFStringRef;
+}
+
+/// The user owning the GUI console session, from the System Configuration
+/// dynamic store. `None` when the machine is sitting at the login window.
+///
+/// LOCAL FORK: the owner of `/dev/console` used to be the only source, and it
+/// is not trustworthy. `loginwindow` hands that node to the user at login and
+/// back to root at logout, but the two no longer move together on current
+/// macOS. A Mac mini this was reproduced on ran a live desktop session -- both
+/// `who` and `scutil` reported the user, uid 501 -- while `/dev/console` had
+/// been owned by root since a reboot that happened *weeks after* that login.
+/// Every caller concluded nobody was logged in.
+///
+/// The visible damage was file transfer: `is_prelogin()` returned true, so
+/// `Connection::send_login_response` blanked `PeerInfo.username` for file
+/// transfer sessions only, and the controlling side refused the session with
+/// "No active console user logged on". Remote desktop to the same machine kept
+/// working, which made it look like a file-transfer bug rather than a bad
+/// login check.
+///
+/// `SCDynamicStoreCopyConsoleUser` reads what `loginwindow` itself maintains,
+/// so it follows the real session, fast user switching included. At the login
+/// screen it returns either NULL or the literal `loginwindow`; both mean "no
+/// console user", which is precisely what callers want to detect.
+fn console_user_from_dynamic_store() -> Option<(String, u32)> {
+    unsafe {
+        let mut uid: u32 = 0;
+        let mut gid: u32 = 0;
+        let name = SCDynamicStoreCopyConsoleUser(std::ptr::null(), &mut uid, &mut gid);
+        if name.is_null() {
+            return None;
+        }
+        // A `Copy` function returns +1, so the create rule owns and releases it.
+        let name = CFString::wrap_under_create_rule(name).to_string();
+        if name.is_empty() || name == "loginwindow" {
+            return None;
+        }
+        Some((name, uid))
+    }
+}
+
 pub fn get_active_username() -> String {
+    if let Some((name, _)) = console_user_from_dynamic_store() {
+        return name;
+    }
     get_active_user("-l")
 }
 
 pub fn get_active_userid() -> String {
+    if let Some((_, uid)) = console_user_from_dynamic_store() {
+        return uid.to_string();
+    }
     get_active_user("-n")
 }
 
@@ -2114,5 +2173,78 @@ fn get_bundle_id() -> Option<String> {
             .to_string_lossy()
             .to_string();
         Some(bundle_id_str)
+    }
+}
+
+#[cfg(test)]
+mod console_user_tests {
+    use super::*;
+
+    /// Ask `scutil` the same question, through a completely separate path, and
+    /// require the answers to agree.
+    ///
+    /// `scutil` prints `Name : <user>` and `UID : <n>` for the console session,
+    /// or `kCGSSessionUserNameKey` absent / `Name : loginwindow` when nobody is
+    /// logged in.
+    fn scutil_console_user() -> Option<(String, u32)> {
+        use std::io::Write;
+        let mut child = std::process::Command::new("/usr/sbin/scutil")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .ok()?;
+        child
+            .stdin
+            .as_mut()?
+            .write_all(b"show State:/Users/ConsoleUser\n")
+            .ok()?;
+        let output = child.wait_with_output().ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut name = None;
+        let mut uid = None;
+        for line in text.lines() {
+            let line = line.trim();
+            if name.is_none() {
+                if let Some(v) = line.strip_prefix("Name : ") {
+                    name = Some(v.trim().to_owned());
+                }
+            }
+            if uid.is_none() {
+                if let Some(v) = line.strip_prefix("UID : ") {
+                    uid = v.trim().parse::<u32>().ok();
+                }
+            }
+        }
+        let name = name?;
+        if name.is_empty() || name == "loginwindow" {
+            return None;
+        }
+        Some((name, uid?))
+    }
+
+    #[test]
+    fn dynamic_store_matches_scutil() {
+        // Both report "no console user" the same way, so either both are Some
+        // and equal, or both are None. A CI box with nobody logged in takes the
+        // second branch and still exercises the parsing.
+        assert_eq!(console_user_from_dynamic_store(), scutil_console_user());
+    }
+
+    /// The regression this replaced: a live session must not be reported as
+    /// pre-login just because `/dev/console` is owned by root.
+    #[test]
+    fn logged_in_session_is_not_prelogin() {
+        let Some((name, uid)) = console_user_from_dynamic_store() else {
+            // Nothing is logged in on this machine; there is nothing to assert.
+            return;
+        };
+        assert_eq!(get_active_username(), name);
+        assert_eq!(get_active_userid(), uid.to_string());
+        assert!(
+            !is_prelogin(),
+            "session for {name} (uid {uid}) reported as pre-login; \
+             /dev/console is owned by {:?}",
+            get_active_user("-l")
+        );
     }
 }

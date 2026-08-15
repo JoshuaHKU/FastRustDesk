@@ -1097,16 +1097,35 @@ mod tests {
         ));
     }
 
+    /// LOCAL FORK: this used to assert that `console_owner_uid()` and
+    /// `get_active_userid()` are equal. They are deliberately allowed to differ
+    /// now.
+    ///
+    /// `get_active_userid()` was changed to ask the System Configuration
+    /// dynamic store for the console session, because `/dev/console`'s owner
+    /// does not reliably follow the logged-in user -- see
+    /// `platform::macos::console_user_from_dynamic_store`. `active_uid_strict()`
+    /// below is a *security* check and deliberately keeps reading the node's
+    /// metadata rather than parsing anything, so the two now answer different
+    /// questions: "who owns this device node" versus "who owns the GUI
+    /// session".
+    ///
+    /// What still has to hold is that both are resolvable and self-consistent,
+    /// and that this module's own check is unaffected by the platform change.
     #[cfg(target_os = "macos")]
     #[test]
-    fn test_console_owner_uid_matches_get_active_userid() {
+    fn test_console_owner_uid_and_active_userid_are_both_resolvable() {
         let console_uid =
             super::console_owner_uid().expect("/dev/console must have a resolvable uid");
+        assert_eq!(
+            super::active_uid_strict(),
+            Some(console_uid),
+            "the IPC auth check must keep using the device node, not the session"
+        );
         let raw_uid = crate::platform::macos::get_active_userid();
-        let parsed_uid: u32 = raw_uid
+        raw_uid
             .trim()
-            .parse()
+            .parse::<u32>()
             .unwrap_or_else(|_| panic!("failed to parse get_active_userid() output: '{raw_uid}'"));
-        assert_eq!(parsed_uid, console_uid);
     }
 }

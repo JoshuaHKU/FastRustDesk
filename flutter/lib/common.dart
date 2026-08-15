@@ -3615,6 +3615,15 @@ Future<bool> setServerConfig(
     controllers[2].text = config.apiServer;
     controllers[3].text = config.key;
   }
+  // LOCAL FORK: clear last attempt's messages before re-validating.
+  //
+  // Each check below only *assigns* errMsgs[n] when that field is non-empty, so
+  // a message survived every later attempt in which the user had cleared the
+  // field. API Server is optional -- it is derived from the ID server when left
+  // blank (see get_api_server_ in src/common.rs) -- but after one attempt with a
+  // scheme-less value, its "must start with http://" error stayed on screen for
+  // good, which reads as "this field is required" and leaves no way out.
+  errMsgs?.forEach((msg) => msg.value = '');
   // id
   if (config.idServer.isNotEmpty && errMsgs != null) {
     errMsgs[0].value = translate(await bind.mainTestIfValidServer(

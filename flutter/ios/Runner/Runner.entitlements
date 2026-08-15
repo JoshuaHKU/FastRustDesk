@@ -2,9 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>aps-environment</key>
-	<string>development</string>
-	<key>com.apple.developer.networking.wifi-info</key>
-	<true/>
+	<!--
+	LOCAL FORK: upstream declares `aps-environment` (push notifications) and
+	`com.apple.developer.networking.wifi-info` (current SSID) here. Neither is
+	referenced anywhere in this codebase -- there is no
+	registerForRemoteNotifications and no CNCopyCurrentNetworkInfo /
+	NEHotspotNetwork call.
+
+	Both are removed because a free Apple ID ("personal team") cannot be granted
+	either capability. Leaving them in makes signing fail outright with
+	"Provisioning profile doesn't include the ... entitlement" -- a confusing
+	error for a capability the app never uses.
+
+	Restore them only alongside a paid Developer Program account AND code that
+	actually needs them.
+	-->
 </dict>
 </plist>

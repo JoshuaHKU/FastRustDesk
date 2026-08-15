@@ -567,8 +567,16 @@ class FileController {
   }
 
   /// sendFiles from current side (FileController.isLocal) to other side (SelectedItems).
-  Future<void> sendFiles(
-      SelectedItems items, DirectoryData otherSideData) async {
+  ///
+  /// [toPath] overrides the destination. It defaults to the directory the other
+  /// side currently has open, which is what the Send/Receive buttons want. Drag
+  /// and drop needs the override: dropping onto a folder row must write into
+  /// that folder, not into the directory the pane happens to be showing.
+  ///
+  /// [otherSideData] is still required even when [toPath] is given -- its
+  /// options carry the destination's path separator and hidden-file setting.
+  Future<void> sendFiles(SelectedItems items, DirectoryData otherSideData,
+      {String? toPath}) async {
     /// ignore wrong items side status
     if (items.isLocal != isLocal) {
       return;
@@ -577,7 +585,7 @@ class FileController {
     // alias
     final isRemoteToLocal = !isLocal;
 
-    final toPath = otherSideData.directory.path;
+    final destPath = toPath ?? otherSideData.directory.path;
     final isWindows = otherSideData.options.isWindows;
     final showHidden = otherSideData.options.showHidden;
     final transferJobs = <(Entry, int)>[];
@@ -593,13 +601,13 @@ class FileController {
           sessionId: sessionId,
           actId: jobID,
           path: from.path,
-          to: PathUtil.join(toPath, from.name, isWindows),
+          to: PathUtil.join(destPath, from.name, isWindows),
           fileNum: 0,
           includeHidden: showHidden,
           isRemote: isRemoteToLocal,
           isDir: from.isDirectory);
       debugPrint(
-          "path: ${from.path}, toPath: $toPath, to: ${PathUtil.join(toPath, from.name, isWindows)}");
+          "path: ${from.path}, toPath: $destPath, to: ${PathUtil.join(destPath, from.name, isWindows)}");
     }
 
     if (isWeb ||
@@ -630,8 +638,11 @@ class FileController {
       }
 
       final dirs = paths.map((path) {
+        // destPath, not otherSideData's directory: empty subdirectories have to
+        // be recreated under the same destination the files went to, or a drop
+        // onto a folder row would scatter them into the pane's open directory.
         return PathUtil.getOtherSidePath(directory.value.path, path,
-            options.value.isWindows, toPath, isWindows);
+            options.value.isWindows, destPath, isWindows);
       });
 
       for (var dir in dirs) {

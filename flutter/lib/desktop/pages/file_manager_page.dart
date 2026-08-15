@@ -367,12 +367,25 @@ class _FileManagerPageState extends State<FileManagerPage>
     );
   }
 
+  /// Files dragged in from the desktop file manager (Explorer / Finder), not
+  /// from the other pane -- `desktop_drop` only reports OS-level drops.
+  ///
+  /// LOCAL FORK: the direction used to be inverted. The dropped paths are read
+  /// off the local disk here (`File(file.path).lengthSync()`), yet they were
+  /// tagged `SelectedItems(isLocal: false)` and handed to `remoteController`,
+  /// which makes `isRemoteToLocal` true and asks the *remote* machine to send
+  /// those local paths back. Unless the same path happens to exist over there,
+  /// the job just fails.
+  ///
+  /// Dropping a local file onto the remote pane means "upload it", so the local
+  /// controller sends and the remote pane's directory is the destination.
   void handleDragDone(DropDoneDetails details, bool isLocal) {
     if (isLocal) {
-      // ignore local
+      // Dropping onto the local pane would be a local file copy, which is not
+      // this window's job -- leave it to the OS file manager.
       return;
     }
-    final items = SelectedItems(isLocal: false);
+    final items = SelectedItems(isLocal: true);
     for (var file in details.files) {
       final f = File(file.path);
       items.add(Entry()
@@ -380,8 +393,45 @@ class _FileManagerPageState extends State<FileManagerPage>
         ..name = file.name
         ..size = FileSystemEntity.isDirectorySync(f.path) ? 0 : f.lengthSync());
     }
-    final otherSideData = model.localController.directoryData();
-    model.remoteController.sendFiles(items, otherSideData);
+    if (!SelectedItems.valid(items.items)) {
+      return;
+    }
+    model.localController
+        .sendFiles(items, model.remoteController.directoryData());
+  }
+}
+
+/// What travels with a row being dragged from one pane to the other.
+///
+/// It carries the *source* controller rather than a bare `isLocal` flag because
+/// `FileController.sendFiles` derives the transfer direction from the
+/// controller it is called on (`isRemoteToLocal = !isLocal`). The drop side can
+/// therefore start the transfer without having to look the sender up.
+class FileDragPayload {
+  final FileController controller;
+
+  /// The row the drag started on.
+  final Entry entry;
+
+  const FileDragPayload(this.controller, this.entry);
+
+  bool get isLocal => controller.isLocal;
+
+  /// The entries this drag should actually move.
+  ///
+  /// Resolved when the drop happens rather than when the row was built:
+  /// `Draggable.data` is captured at build time, and the row's selection
+  /// highlight rebuilds in its own inner `Obx` without rebuilding the
+  /// `Draggable` around it -- so a list baked in at build time goes stale the
+  /// moment the user changes the selection.
+  ///
+  /// Dragging a row inside the selection moves the whole selection; dragging
+  /// any other row moves just that row.
+  List<Entry> resolveEntries() {
+    final selected = controller.selectedItems.items;
+    return selected.contains(entry)
+        ? selected.toList(growable: false)
+        : [entry];
   }
 }
 
@@ -422,6 +472,149 @@ class _FileManagerViewState extends State<FileManagerView> {
   bool get isLocal => widget.controller.isLocal;
   FFI get _ffi => widget._ffi;
   SelectedItems get selectedItems => controller.selectedItems;
+
+  /// Cross-pane drag and drop is only meaningful when both panes exist. On web
+  /// the local pane is not built at all (see the `if (!isWeb)` in the page
+  /// body), so there is nothing to drag between.
+  bool get _dragEnabled => !isWeb;
+
+  /// Dragging a row that is not selected makes it the selection, so that the
+  /// highlight and the drag badge agree with what is about to be sent.
+  void _selectForDrag(Entry entry) {
+    if (selectedItems.items.contains(entry)) {
+      return;
+    }
+    selectedItems.clear();
+    selectedItems.add(entry);
+  }
+
+  /// How many entries the badge should announce. Reactive: it is read inside an
+  /// [Obx] so selecting more rows mid-drag updates the count.
+  int _dragCountFor(Entry entry) {
+    final selected = selectedItems.items;
+    return selected.contains(entry) ? selected.length : 1;
+  }
+
+  /// The little card that follows the cursor during a drag.
+  ///
+  /// It renders outside the widget tree, so it needs its own [Material] --
+  /// without one the text comes out with the default yellow-underlined
+  /// unstyled-text look.
+  Widget _dragFeedback(int count) {
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: MyTheme.button,
+          borderRadius: BorderRadius.all(Radius.circular(5.0)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.drive_file_move_outlined,
+              size: 16, color: Colors.white),
+          SizedBox(width: 6),
+          Text(
+            count > 1 ? '$count' : translate('Transfer file'),
+            style: TextStyle(color: Colors.white, fontSize: 12),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  /// Accept a payload only from the *other* pane.
+  ///
+  /// A same-pane drop would be a move within one filesystem, which needs
+  /// different plumbing than a transfer and is deliberately not handled here.
+  bool _willAcceptDrag(FileDragPayload? payload) =>
+      payload != null && payload.isLocal != isLocal;
+
+  /// Start the transfer for a dropped payload.
+  ///
+  /// [destPath] is null when the drop landed on empty space, meaning "into the
+  /// directory this pane is showing". It is set when the drop landed on a
+  /// folder row.
+  ///
+  /// The send is issued on the *source* controller: `sendFiles` reads the
+  /// direction off the controller it runs on, and refuses items whose side does
+  /// not match it.
+  void _onCrossPaneDrop(FileDragPayload payload, {String? destPath}) {
+    if (!_willAcceptDrag(payload)) {
+      return;
+    }
+    final items = SelectedItems(isLocal: payload.isLocal);
+    for (final e in payload.resolveEntries()) {
+      items.add(e); // drops drives, which cannot be transferred
+    }
+    if (!SelectedItems.valid(items.items)) {
+      return;
+    }
+    payload.controller
+        .sendFiles(items, controller.directoryData(), toPath: destPath);
+    payload.controller.selectedItems.clear();
+  }
+
+  /// Make a row draggable, and -- when it is a folder -- also a drop target so
+  /// a transfer can be aimed straight into it.
+  ///
+  /// The folder [DragTarget] sits *inside* the pane-wide one added by
+  /// [_wrapPaneDropTarget]. Flutter offers a drop to the innermost target
+  /// first, so landing on a folder wins over landing on the pane.
+  Widget _wrapRowDragAndDrop(Entry entry, Widget row) {
+    if (!_dragEnabled || entry.isDrive) {
+      return row;
+    }
+
+    // `pointerDragAnchorStrategy` keeps the feedback card under the cursor
+    // instead of anchoring it to wherever inside the row the drag began.
+    Widget draggable = Draggable<FileDragPayload>(
+      data: FileDragPayload(controller, entry),
+      dragAnchorStrategy: pointerDragAnchorStrategy,
+      onDragStarted: () => _selectForDrag(entry),
+      feedback: Obx(() => _dragFeedback(_dragCountFor(entry))),
+      childWhenDragging: Opacity(opacity: 0.4, child: row),
+      child: row,
+    );
+
+    if (!entry.isDirectory) {
+      return draggable;
+    }
+    return DragTarget<FileDragPayload>(
+      onWillAcceptWithDetails: (d) => _willAcceptDrag(d.data),
+      onAcceptWithDetails: (d) =>
+          _onCrossPaneDrop(d.data, destPath: entry.path),
+      builder: (context, candidate, rejected) => Container(
+        decoration: candidate.isEmpty
+            ? null
+            : BoxDecoration(
+                border: Border.all(color: MyTheme.button, width: 2.0),
+                borderRadius: BorderRadius.all(Radius.circular(5.0)),
+              ),
+        child: draggable,
+      ),
+    );
+  }
+
+  /// Wrap the whole file list so a drop on empty space lands in the directory
+  /// this pane currently has open.
+  Widget _wrapPaneDropTarget(Widget child) {
+    if (!_dragEnabled) {
+      return child;
+    }
+    return DragTarget<FileDragPayload>(
+      onWillAcceptWithDetails: (d) => _willAcceptDrag(d.data),
+      onAcceptWithDetails: (d) => _onCrossPaneDrop(d.data),
+      builder: (context, candidate, rejected) => Container(
+        decoration: candidate.isEmpty
+            ? null
+            : BoxDecoration(
+                color: MyTheme.button.withOpacity(0.08),
+                border: Border.all(color: MyTheme.button, width: 2.0),
+              ),
+        child: child,
+      ),
+    );
+  }
 
   @override
   void initState() {
@@ -1150,7 +1343,7 @@ class _FileManagerViewState extends State<FileManagerView> {
 
           return Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
-            child: Obx(() => Container(
+            child: _wrapRowDragAndDrop(entry, Obx(() => Container(
                 decoration: BoxDecoration(
                   color: selectedItems.items.contains(entry)
                       ? MyTheme.button
@@ -1274,7 +1467,7 @@ class _FileManagerViewState extends State<FileManagerView> {
                       ),
                     ),
                   ],
-                ))),
+                )))),
           );
         }).toList(growable: false);
 
@@ -1288,14 +1481,14 @@ class _FileManagerViewState extends State<FileManagerView> {
             ),
             // Body
             Expanded(
-              child: ListView.builder(
+              child: _wrapPaneDropTarget(ListView.builder(
                 controller: scrollController,
                 itemExtent: kDesktopFileTransferRowHeight,
                 itemBuilder: (context, index) {
                   return rows[index];
                 },
                 itemCount: rows.length,
-              ),
+              )),
             ),
           ],
         );

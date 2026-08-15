@@ -132,6 +132,23 @@ double-click to install, and it points at your server with nothing to type.
 > `rd.example.com:41116`. Upstream can only name a bare host, which silently
 > dials the wrong port against a server on non-default ports.
 
+### 7. Drag and drop between the two file-transfer panes
+
+Drag a file or folder from one pane to the other to transfer it, and **drop it
+onto a folder row to write into that folder**. Before this you had to select and
+press your own pane's button, and the destination was always whatever directory
+the opposite pane had open — there was no way to aim.
+
+> Upstream's two buttons look like a pair but are actually **one per
+> direction**: "Send" on your pane, "Receive" on the other one, the same code
+> behind both, with the direction taken from which pane's controller ran it. To
+> pull a file back from the remote machine you select it in the **remote** pane
+> and press that pane's own button — which is not obvious.
+
+This also fixes an upstream defect: dropping a file from Explorer/Finder onto
+the remote pane used to ask the *remote* machine to send a local path, so the
+job failed. It now uploads, which is what the gesture means.
+
 ## What FastRDServer adds
 
 This client with the stock open-source server gives you "RustDesk that performs
@@ -153,7 +170,34 @@ better". Pairing it with **FastRDServer** gives you the whole thing:
 |---|---|
 | **macOS** (Apple Silicon, 12.3+) | Controller and controlled; all performance work applies |
 | **Windows** 10/11 x64 | Controller and controlled; feature-complete |
-| Linux / Android / iOS | Upstream code retained, **untested in this fork** |
+| **iOS** 13.0+ | **Controller only**; builds and runs, see below |
+| Linux / Android | Upstream code retained, **untested in this fork** |
+
+### iOS
+
+It builds and runs on a device, but it can only ever be the **controlling**
+side: upstream excludes `mod server` and `mod rendezvous_mediator` from iOS, so
+an iPhone cannot be controlled. ffmpeg's iOS configuration agrees — it enables
+decoders only (`--disable-encoders --disable-videotoolbox`).
+
+Three things to know before building it yourself:
+
+- **Set your own bundle identifier and team first.**
+  `PRODUCT_BUNDLE_IDENTIFIER` here is a placeholder
+  (`com.example.fastrustdesk`) and `DEVELOPMENT_TEAM` is empty so Xcode fills
+  in whichever account is signed in.
+- **Export `IPHONEOS_DEPLOYMENT_TARGET=13.0` before `cargo build`.** rustc's
+  `aarch64-apple-ios` links against iOS 10.0 by default while vcpkg builds aom
+  against the current SDK; the 10.0 libSystem has no `___chkstk_darwin` (it
+  arrived in iOS 12), which produces a wall of undefined symbols.
+- **Installing the `arm64-ios` dependencies deletes `ffmpeg:arm64-osx`.**
+  ffmpeg's `host: true` platform expression in vcpkg.json is
+  `(... | osx) & static`, which is false for an iOS target, so manifest mode
+  decides it is no longer needed. The macOS build wants it — reinstall it
+  afterwards.
+
+Signed with a free Apple ID, the certificate **expires after 7 days** and the
+app has to be re-signed and reinstalled.
 
 The performance work is in the macOS capture and encode path and **does not
 carry over** to other platforms. Accounts, grouping, the device roster and the

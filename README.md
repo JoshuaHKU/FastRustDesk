@@ -109,6 +109,19 @@ Apple 已在 macOS 14 弃用 `CGDisplayStream`。新后端在 `libs/scrap/src/sc
 > `host=rd.example.com+41116` → `rd.example.com:41116`。
 > 上游只能写裸主机名，对着非默认端口的服务器会静默连错端口。
 
+### 7. 文件传输窗支持两栏间拖拽
+
+在【本地电脑】与【远程电脑】两栏之间直接拖文件或目录即可传输，**拖到某个文件夹
+行上就传进那个文件夹**。原来只能选中后点本栏的按钮，目的地永远是对面栏当前打开
+的目录，没法指定。
+
+> 上游那两个按钮看着像一对，其实**各管一个方向**：本栏叫「发送」、对面栏叫
+> 「接受」，代码是同一段，方向由是哪一栏的 controller 发起决定。想把远程文件取
+> 回本地，要在**远程那一栏**选中再点它自己的「接受」——这一点相当反直觉。
+
+顺带修了一个上游缺陷：从资源管理器/访达往远程栏拖文件，原本会去请求**远程机器**
+发送一个本地路径，任务必然失败；现在按手势语义正确地上传。
+
 ## 搭配 FastRDServer 能得到什么
 
 单独用本客户端 + 官方开源服务端，你得到的是「性能更好的 RustDesk」。
@@ -133,7 +146,28 @@ FastRDServer 的详细说明见它自己的 README 与
 |---|---|
 | **macOS**（Apple Silicon，12.3+） | 主控 + 被控，性能优化全部生效 |
 | **Windows** 10/11 x64 | 主控 + 被控，功能完整 |
-| Linux / Android / iOS | 上游代码保留，**未在本分支测试** |
+| **iOS** 13.0+ | **仅主控**，可编译可运行，见下 |
+| Linux / Android | 上游代码保留，**未在本分支测试** |
+
+### iOS
+
+能编出来并装到真机运行，但**只能当主控端**——上游把 `mod server` 和
+`mod rendezvous_mediator` 都排除在 iOS 之外，iPhone 无法被控。ffmpeg 的 iOS
+配置也只开解码器（`--disable-encoders --disable-videotoolbox`），与此一致。
+
+自行构建要注意三点：
+
+- **先设自己的 Bundle ID 和团队。** 仓库里 `PRODUCT_BUNDLE_IDENTIFIER` 是占位符
+  `com.example.fastrustdesk`，`DEVELOPMENT_TEAM` 留空由 Xcode 填。
+- **`IPHONEOS_DEPLOYMENT_TARGET=13.0` 必须导出后再 `cargo build`。** rustc 的
+  `aarch64-apple-ios` 默认按 iOS 10.0 链接，而 vcpkg 的 aom 按当前 SDK 编，
+  10.0 的 libSystem 里没有 `___chkstk_darwin`（iOS 12 才加入），会报一大片
+  未定义符号。
+- **装 `arm64-ios` 依赖会顺带删掉 `ffmpeg:arm64-osx`。** vcpkg.json 里 ffmpeg 的
+  `host: true` 平台条件是 `(... | osx) & static`，目标是 iOS 时判假，manifest
+  模式认为不再需要。macOS 构建要用它，装完记得补回来。
+
+用免费 Apple ID 签名时证书 **7 天到期**，到期需重新签名安装。
 
 性能优化是 macOS 采集与编码链路上的，**不会平移到其他平台**；账号、分组、
 设备列表、P2P 显示这些是跨平台的。

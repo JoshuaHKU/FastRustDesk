@@ -149,6 +149,30 @@ This also fixes an upstream defect: dropping a file from Explorer/Finder onto
 the remote pane used to ask the *remote* machine to send a local path, so the
 job failed. It now uploads, which is what the gesture means.
 
+### 8. The update check is turned off
+
+**This fork never checks for updates and never asks anyone what the latest
+version is.** That is deliberate, not an oversight.
+
+Upstream's check compares the latest release against `crate::VERSION`, which
+this fork keeps at its upstream base. Every later upstream release therefore
+reads as an available update, permanently. And it is not one: what it offers is
+stock RustDesk, which on macOS gets installed **as root**, replacing this build
+and every change in it. The only thing standing in the way is
+`allow-auto-update`, off by default.
+
+It also POSTs to `api.rustdesk.com` on every start, which rather defeats the
+point of running your own server.
+
+> It is disabled in `do_check_software_update()` — the one funnel the startup
+> banner, the auto-update scheduler and the macOS root service all pass
+> through. The latter two call it directly, **bypassing** the "Check for
+> software update on startup" setting, which is why unticking that box is not
+> enough on its own and why this is done in code instead.
+>
+> To restore it, delete the two blocks marked `LOCAL FORK` in `src/common.rs`
+> and `src/updater.rs`. The `enable-check-update` option itself is untouched.
+
 ## What FastRDServer adds
 
 This client with the stock open-source server gives you "RustDesk that performs

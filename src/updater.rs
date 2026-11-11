@@ -85,6 +85,13 @@ pub fn update_controlling_session_count(count: usize) {
 
 #[allow(dead_code)]
 pub fn start_auto_update() {
+    // LOCAL FORK: no scheduler. `do_check_software_update` returns early in
+    // this fork (see the note there), so this thread would wake up forever to
+    // learn nothing. Touching TX_MSG is what spawns it, hence the early return
+    // rather than an empty body.
+    if true {
+        return;
+    }
     let _sender = TX_MSG.lock().unwrap();
 }
 
@@ -492,6 +499,12 @@ fn wait_for_failed_update_retry() {
 /// Called from `start_os_service()` which runs as root via LaunchDaemon.
 #[cfg(target_os = "macos")]
 pub fn start_auto_update_macos() {
+    // LOCAL FORK: see start_auto_update. This is the thread that logged
+    // "[root-update] Auto-update scheduler thread started." on every service
+    // start.
+    if true {
+        return;
+    }
     let spawn_result = std::thread::Builder::new()
         .name("rustdesk-auto-update".to_owned())
         .spawn(|| {

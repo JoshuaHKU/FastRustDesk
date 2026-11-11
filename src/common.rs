@@ -969,6 +969,35 @@ pub fn check_software_update() {
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    // LOCAL FORK: the update check is disabled outright.
+    //
+    // Every path that can offer an update funnels through here -- the startup
+    // banner (`check_software_update`), the auto-update scheduler
+    // (`updater::check_update`) and the macOS root service
+    // (`updater::check_update_as_root`) -- so one early return covers all of
+    // them. The latter two call this function *directly*, bypassing the
+    // `enable-check-update` option, which is why unticking "Check for software
+    // update on startup" in Settings was not enough on its own.
+    //
+    // Two reasons, both specific to a fork:
+    //
+    //   1. What it offers cannot be installed. It compares upstream's latest
+    //      release against `crate::VERSION`, which this fork keeps at its
+    //      upstream base. Any newer upstream release therefore shows as an
+    //      update forever, and it is not one: the download is stock RustDesk,
+    //      and on macOS `check_update_as_root` would install that .dmg **as
+    //      root**, replacing this build and everything in it. Only
+    //      `allow-auto-update` (default off) stands between that and the disk.
+    //
+    //   2. It phones home. The request goes to `api.rustdesk.com/version/latest`
+    //      on every start, which defeats the point of running your own server.
+    //
+    // To re-enable, delete this block. The `enable-check-update` option still
+    // works and still gates the banner path, so nothing else had to change.
+    *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
+    return Ok(());
+
+    #[allow(unreachable_code)]
     let (request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     let proxy_conf = Config::get_socks();

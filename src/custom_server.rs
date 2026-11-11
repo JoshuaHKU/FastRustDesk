@@ -57,7 +57,19 @@ pub fn get_custom_server_from_string(s: &str) -> ResultType<CustomServer> {
      * This allows using a ',' (comma) symbol as a final delimiter.
      */
     if s.to_lowercase().contains("host=") {
-        let stripped = &s[s.to_lowercase().find("host=").unwrap_or(0)..s.len()];
+        // UPSTREAM #16556: `to_ascii_lowercase`, not `to_lowercase`.
+        //
+        // The index comes from the lowercased copy but slices the original, so
+        // the two must agree byte for byte. Unicode lowercasing does not keep
+        // that promise: Turkish `İ` (U+0130, 2 bytes) lowercases to `i̇`
+        // (3 bytes), and one such character anywhere to the left of `host=`
+        // shifts every later byte. Windows hands this function the full exe
+        // path, so the character can come from a user's home directory name.
+        //
+        // The other `to_lowercase` calls in this file are fine: they pair
+        // `ends_with`/`starts_with` with a fixed count of ASCII bytes, and a
+        // match there already proves the original has those same bytes.
+        let stripped = &s[s.to_ascii_lowercase().find("host=").unwrap_or(0)..s.len()];
         let strs: Vec<&str> = stripped.split(",").collect();
         let mut host = String::default();
         let mut key = String::default();
@@ -239,6 +251,23 @@ mod test {
     fn plus_in_host_means_colon() {
         let got = get_custom_server_from_string(
             "FastRustDesk-1.4.9-host=rd.example.com+41116,key=abc,.exe",
+        )
+        .unwrap();
+        assert_eq!(got.host, "rd.example.com:41116");
+        assert_eq!(got.key, "abc");
+    }
+
+    /// UPSTREAM #16556: Windows passes the whole exe path, so a character in a
+    /// user's home directory name can shift the byte index of `host=`.
+    ///
+    /// `İ` (U+0130) is the character that breaks it: 2 bytes, but 3 once
+    /// lowercased. With `to_lowercase` the index landed mid-token and the parse
+    /// came back wrong or panicked. This also pins the fork's `+` substitution
+    /// through the same path, since the two interact on exactly this string.
+    #[test]
+    fn non_ascii_path_does_not_shift_the_host_index() {
+        let got = get_custom_server_from_string(
+            r"C:\Users\İsmail\Downloads\FastRustDesk-1.4.9-host=rd.example.com+41116,key=abc,.exe",
         )
         .unwrap();
         assert_eq!(got.host, "rd.example.com:41116");

@@ -220,6 +220,7 @@ python build.py --portable --flutter --hwcodec
 | [INSTALL-FastRustDesk-macos.md](INSTALL-FastRustDesk-macos.md) | macOS 客户端安装配置 |
 | [INSTALL-FastRustDesk-windows.md](INSTALL-FastRustDesk-windows.md) | Windows 客户端安装配置 |
 | [INSTALL-FastRDServer-ubuntu.md](INSTALL-FastRDServer-ubuntu.md) | 服务端安装配置 |
+| [CHANGELOG.md](CHANGELOG.md) | 版本说明：每个版本改了什么、为什么 |
 | [README-upstream.md](README-upstream.md) | RustDesk 官方原始 README |
 
 文档里所有地址、密钥、设备 ID 都是占位符（`rd.example.com`、

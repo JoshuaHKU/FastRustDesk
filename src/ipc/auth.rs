@@ -1,3 +1,44 @@
+//! Peer authorization for the local IPC channels (LOCAL FORK).
+//!
+//! Upstream's IPC sockets are reachable by anything running on the box: whoever
+//! connects to `<app>_service` can drive the daemon, which runs as root on macOS
+//! and LocalSystem on Windows. This module is the gate in front of them. Every
+//! check here answers one of two questions:
+//!
+//!   * **Who is the peer?** `peer_uid_from_fd` / `peer_pid_from_fd` read the
+//!     credentials off the socket itself (`SO_PEERCRED` on Linux, `LOCAL_PEERPID`
+//!     on macOS) rather than trusting anything the peer says. For the
+//!     service-scoped channels that uid must be the one owning `/dev/console`
+//!     (`console_owner_uid` stats it), i.e. the user holding the graphical
+//!     session, so a second logged-in or SSH user cannot reach its daemon. On Windows the listener is instead narrowed at
+//!     creation time with an SDDL ACL (`portable_service_listener_security_attributes`).
+//!
+//!   * **Is the peer our own binary?** `ensure_peer_executable_matches_current_by_pid`
+//!     resolves the peer's executable by pid and requires it to be the *same file*
+//!     as ours (canonicalised, so symlinks and `/private` prefixes do not fool it).
+//!
+//! Two deliberate exceptions exist, both kept as narrow as the deployment allows:
+//!
+//!   * macOS, `_service` only: the listener is the `service` binary inside the app
+//!     bundle while the connecting GUI is the app executable, so the two differ by
+//!     name. `macos_service_ipc_allows_gui_and_service_binaries` accepts that pair
+//!     **only** when both live in the same directory and both names are one of the
+//!     two expected ones.
+//!   * Windows, `_portable_service` only, and only in the non-flutter build: the
+//!     logon helper is a separate executable, accepted only when it canonicalises
+//!     to the path `portable_service_logon_helper_paths()` reports *and* its
+//!     SHA-256 is identical to the running executable's — the helper is a copy of
+//!     the same exe, so anything else at that path is rejected
+//!     (`portable_service_helper_is_trusted`).
+//!
+//! A rejection must stay cheap to log: a peer that retries in a loop would
+//! otherwise fill the log, so `UnauthorizedIpcLogThrottle` collapses repeats.
+//!
+//! **When editing, keep the default deny.** Every helper here returns `false` /
+//! `Err` on anything it cannot positively verify — an unreadable `/proc` entry, a
+//! missing parent directory, a pid that has already exited. That is why the
+//! failure paths look repetitive; they are the safe side, not oversight.
+
 use crate::ipc::{Connection, ConnectionTmpl};
 #[cfg(all(windows, not(feature = "flutter")))]
 use hbb_common::sha2::{Digest, Sha256};

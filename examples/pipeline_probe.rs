@@ -21,7 +21,13 @@ fn main() {
 
     let d = Display::primary().expect("primary display");
     let (w, h) = (d.width(), d.height());
-    println!("display: {}x{} (name={} scale={:.2})", w, h, d.name(), d.scale());
+    println!(
+        "display: {}x{} (name={} scale={:.2})",
+        w,
+        h,
+        d.name(),
+        d.scale()
+    );
 
     // try_get() reads a cached codec config that the app normally populates during
     // startup. Probe and store it first, exactly as the real startup path does.
@@ -70,7 +76,9 @@ fn main() {
                 break;
             }
         };
-        let scrap::Frame::PixelBuffer(pb) = f else { continue };
+        let scrap::Frame::PixelBuffer(pb) = f else {
+            continue;
+        };
         frames += 1;
 
         let t0 = Instant::now();
@@ -94,8 +102,15 @@ fn main() {
     println!("\n--- {:.1}s ---", el);
     println!("captured frames : {frames}  ({:.1}/s)", frames as f64 / el);
     println!("encoded units   : {encoded} ({keyframes} keyframes)");
-    println!("bitstream       : {:.2} MB  ({:.2} Mbps)", bytes as f64 / 1e6, (bytes as f64 * 8.0) / el / 1e6);
-    println!("worst encode    : {:.1} ms", worst_encode.as_secs_f64() * 1000.0);
+    println!(
+        "bitstream       : {:.2} MB  ({:.2} Mbps)",
+        bytes as f64 / 1e6,
+        (bytes as f64 * 8.0) / el / 1e6
+    );
+    println!(
+        "worst encode    : {:.1} ms",
+        worst_encode.as_secs_f64() * 1000.0
+    );
 
     assert!(frames > 0, "no frames captured");
     assert!(encoded > 0, "encoder produced nothing");

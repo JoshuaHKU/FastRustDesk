@@ -60,7 +60,10 @@ async fn main() {
         println!("FAIL: A's own devices missing from A's roster");
         bad = true;
     }
-    if a_ids.iter().any(|i| i.starts_with("bbb") || i.starts_with("ccc")) {
+    if a_ids
+        .iter()
+        .any(|i| i.starts_with("bbb") || i.starts_with("ccc"))
+    {
         println!("FAIL: A can see devices that are not in A's account");
         bad = true;
     }

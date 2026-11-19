@@ -8,7 +8,9 @@ extern crate librustdesk as _;
 use hbb_common::config::{self, Config};
 
 fn main() {
-    let pw = std::env::args().nth(1).expect("usage: setup_host <password>");
+    let pw = std::env::args()
+        .nth(1)
+        .expect("usage: setup_host <password>");
 
     if Config::is_disable_change_permanent_password() {
         eprintln!("permanent password changes are disabled by policy");
@@ -27,5 +29,9 @@ fn main() {
 
     println!("id = {}", Config::get_id());
     let (stored, salt) = Config::get_local_permanent_password_storage_and_salt();
-    println!("password stored: {} chars, salt: {} chars", stored.len(), salt.len());
+    println!(
+        "password stored: {} chars, salt: {} chars",
+        stored.len(),
+        salt.len()
+    );
 }

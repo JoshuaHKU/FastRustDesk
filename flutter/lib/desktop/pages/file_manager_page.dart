@@ -510,8 +510,7 @@ class _FileManagerViewState extends State<FileManagerView> {
           borderRadius: BorderRadius.all(Radius.circular(5.0)),
         ),
         child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.drive_file_move_outlined,
-              size: 16, color: Colors.white),
+          Icon(Icons.drive_file_move_outlined, size: 16, color: Colors.white),
           SizedBox(width: 6),
           Text(
             count > 1 ? '$count' : translate('Transfer file'),
@@ -1343,131 +1342,137 @@ class _FileManagerViewState extends State<FileManagerView> {
 
           return Padding(
             padding: EdgeInsets.symmetric(vertical: 1),
-            child: _wrapRowDragAndDrop(entry, Obx(() => Container(
-                decoration: BoxDecoration(
-                  color: selectedItems.items.contains(entry)
-                      ? MyTheme.button
-                      : Theme.of(context).cardColor,
-                  borderRadius: BorderRadius.all(
-                    Radius.circular(5.0),
-                  ),
-                  border: rightClickEntry.value == entry
-                      ? Border.all(
-                          color: MyTheme.button,
-                          width: 1.0,
-                        )
-                      : null,
-                ),
-                key: ValueKey(entry.name),
-                height: kDesktopFileTransferRowHeight,
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.spaceAround,
-                  children: [
-                    Expanded(
-                      child: InkWell(
-                        child: Row(
-                          children: [
-                            GestureDetector(
-                              child: Obx(
-                                () => Container(
-                                    width: _nameColWidth.value,
+            child: _wrapRowDragAndDrop(
+                entry,
+                Obx(() => Container(
+                    decoration: BoxDecoration(
+                      color: selectedItems.items.contains(entry)
+                          ? MyTheme.button
+                          : Theme.of(context).cardColor,
+                      borderRadius: BorderRadius.all(
+                        Radius.circular(5.0),
+                      ),
+                      border: rightClickEntry.value == entry
+                          ? Border.all(
+                              color: MyTheme.button,
+                              width: 1.0,
+                            )
+                          : null,
+                    ),
+                    key: ValueKey(entry.name),
+                    height: kDesktopFileTransferRowHeight,
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            child: Row(
+                              children: [
+                                GestureDetector(
+                                  child: Obx(
+                                    () => Container(
+                                        width: _nameColWidth.value,
+                                        child: Tooltip(
+                                          waitDuration:
+                                              Duration(milliseconds: 500),
+                                          message: entry.name,
+                                          child: Row(children: [
+                                            entry.isDrive
+                                                ? Image(
+                                                        image: iconHardDrive,
+                                                        fit: BoxFit.scaleDown,
+                                                        color: Theme.of(context)
+                                                            .iconTheme
+                                                            .color
+                                                            ?.withOpacity(0.7))
+                                                    .paddingAll(4)
+                                                : SvgPicture.asset(
+                                                    entry.isFile
+                                                        ? "assets/file.svg"
+                                                        : "assets/folder.svg",
+                                                    colorFilter: svgColor(
+                                                        Theme.of(context)
+                                                            .tabBarTheme
+                                                            .labelColor),
+                                                  ),
+                                            Expanded(
+                                                child: Text(
+                                                    entry.name.nonBreaking,
+                                                    style: TextStyle(
+                                                        color: selectedItems
+                                                                .items
+                                                                .contains(entry)
+                                                            ? Colors.white
+                                                            : null),
+                                                    overflow:
+                                                        TextOverflow.ellipsis))
+                                          ]),
+                                        )),
+                                  ),
+                                  onTap: onTap,
+                                  onSecondaryTap: onSecondaryTap,
+                                  onSecondaryTapDown: onSecondaryTapDown,
+                                ),
+                                SizedBox(
+                                  width: 2.0,
+                                ),
+                                GestureDetector(
+                                  child: Obx(
+                                    () => SizedBox(
+                                      width: _modifiedColWidth.value,
+                                      child: Tooltip(
+                                          waitDuration:
+                                              Duration(milliseconds: 500),
+                                          message: lastModifiedStr,
+                                          child: Text(
+                                            lastModifiedStr,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: selectedItems.items
+                                                      .contains(entry)
+                                                  ? Colors.white70
+                                                  : MyTheme.darkGray,
+                                            ),
+                                          )),
+                                    ),
+                                  ),
+                                  onTap: onTap,
+                                  onSecondaryTap: onSecondaryTap,
+                                  onSecondaryTapDown: onSecondaryTapDown,
+                                ),
+                                // Divider from header.
+                                SizedBox(
+                                  width: 2.0,
+                                ),
+                                Expanded(
+                                  // width: 100,
+                                  child: GestureDetector(
                                     child: Tooltip(
                                       waitDuration: Duration(milliseconds: 500),
-                                      message: entry.name,
-                                      child: Row(children: [
-                                        entry.isDrive
-                                            ? Image(
-                                                    image: iconHardDrive,
-                                                    fit: BoxFit.scaleDown,
-                                                    color: Theme.of(context)
-                                                        .iconTheme
-                                                        .color
-                                                        ?.withOpacity(0.7))
-                                                .paddingAll(4)
-                                            : SvgPicture.asset(
-                                                entry.isFile
-                                                    ? "assets/file.svg"
-                                                    : "assets/folder.svg",
-                                                colorFilter: svgColor(
-                                                    Theme.of(context)
-                                                        .tabBarTheme
-                                                        .labelColor),
-                                              ),
-                                        Expanded(
-                                            child: Text(entry.name.nonBreaking,
-                                                style: TextStyle(
-                                                    color: selectedItems.items
-                                                            .contains(entry)
-                                                        ? Colors.white
-                                                        : null),
-                                                overflow:
-                                                    TextOverflow.ellipsis))
-                                      ]),
-                                    )),
-                              ),
-                              onTap: onTap,
-                              onSecondaryTap: onSecondaryTap,
-                              onSecondaryTapDown: onSecondaryTapDown,
-                            ),
-                            SizedBox(
-                              width: 2.0,
-                            ),
-                            GestureDetector(
-                              child: Obx(
-                                () => SizedBox(
-                                  width: _modifiedColWidth.value,
-                                  child: Tooltip(
-                                      waitDuration: Duration(milliseconds: 500),
-                                      message: lastModifiedStr,
+                                      message: sizeStr,
                                       child: Text(
-                                        lastModifiedStr,
+                                        sizeStr,
                                         overflow: TextOverflow.ellipsis,
                                         style: TextStyle(
-                                          fontSize: 12,
-                                          color: selectedItems.items
-                                                  .contains(entry)
-                                              ? Colors.white70
-                                              : MyTheme.darkGray,
-                                        ),
-                                      )),
-                                ),
-                              ),
-                              onTap: onTap,
-                              onSecondaryTap: onSecondaryTap,
-                              onSecondaryTapDown: onSecondaryTapDown,
-                            ),
-                            // Divider from header.
-                            SizedBox(
-                              width: 2.0,
-                            ),
-                            Expanded(
-                              // width: 100,
-                              child: GestureDetector(
-                                child: Tooltip(
-                                  waitDuration: Duration(milliseconds: 500),
-                                  message: sizeStr,
-                                  child: Text(
-                                    sizeStr,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                        fontSize: 10,
-                                        color:
-                                            selectedItems.items.contains(entry)
+                                            fontSize: 10,
+                                            color: selectedItems.items
+                                                    .contains(entry)
                                                 ? Colors.white70
                                                 : MyTheme.darkGray),
+                                      ),
+                                    ),
+                                    onTap: onTap,
+                                    onSecondaryTap: onSecondaryTap,
+                                    onSecondaryTapDown: onSecondaryTapDown,
                                   ),
                                 ),
-                                onTap: onTap,
-                                onSecondaryTap: onSecondaryTap,
-                                onSecondaryTapDown: onSecondaryTapDown,
-                              ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
-                      ),
-                    ),
-                  ],
-                )))),
+                      ],
+                    )))),
           );
         }).toList(growable: false);
 

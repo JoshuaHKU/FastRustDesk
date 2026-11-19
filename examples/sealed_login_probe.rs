@@ -135,7 +135,9 @@ fn main() {
 /// Minimal POST so the probe does not drag in an HTTP client crate.
 fn ureq_post(url: &str, body: &str) -> Result<String, String> {
     use std::io::{Read, Write};
-    let rest = url.strip_prefix("http://").ok_or("only http:// supported")?;
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or("only http:// supported")?;
     let (host_port, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),

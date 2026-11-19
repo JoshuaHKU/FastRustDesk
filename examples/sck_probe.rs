@@ -16,12 +16,20 @@ fn main() {
         let (ox, oy) = d.origin();
         println!(
             "\n[{i}] name={} {}x{} origin=({ox},{oy}) scale={:.2} primary={} online={}",
-            d.name(), w, h, d.scale(), d.is_primary(), d.is_online()
+            d.name(),
+            w,
+            h,
+            d.scale(),
+            d.is_primary(),
+            d.is_online()
         );
 
         let mut cap = match Capturer::new(d) {
             Ok(c) => c,
-            Err(e) => { println!("  capturer failed: {e}"); continue }
+            Err(e) => {
+                println!("  capturer failed: {e}");
+                continue;
+            }
         };
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -36,7 +44,11 @@ fn main() {
                             first_ms = Some(t0.elapsed().as_millis());
                             println!(
                                 "  first frame: {}x{} stride={:?} pixfmt={:?} bytes={}",
-                                pb.width(), pb.height(), pb.stride(), pb.pixfmt(), pb.data().len()
+                                pb.width(),
+                                pb.height(),
+                                pb.stride(),
+                                pb.pixfmt(),
+                                pb.data().len()
                             );
                             let expect = pb.stride()[0] * pb.height();
                             assert_eq!(pb.data().len(), expect, "buffer must match stride*height");
@@ -51,10 +63,19 @@ fn main() {
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(Duration::from_millis(15));
                 }
-                Err(e) => { println!("  frame error: {e}"); break }
+                Err(e) => {
+                    println!("  frame error: {e}");
+                    break;
+                }
             }
         }
-        println!("  frames in {:?}: {frames} (first at {:?}ms)", t0.elapsed(), first_ms);
-        if frames == 0 { println!("  !! NO FRAMES"); }
+        println!(
+            "  frames in {:?}: {frames} (first at {:?}ms)",
+            t0.elapsed(),
+            first_ms
+        );
+        if frames == 0 {
+            println!("  !! NO FRAMES");
+        }
     }
 }

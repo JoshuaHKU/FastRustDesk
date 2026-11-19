@@ -1702,6 +1702,28 @@ copy /Y \"{tmp_path}\\{app_name} Tray.lnk\" \"%PROGRAMDATA%\\Microsoft\\Windows\
         "".to_owned()
     };
 
+    // LOCAL FORK: clear `stop-service` before building `cmds`.
+    //
+    // `{after_install}` below expands `get_create_service()`, which emits the
+    // `sc create ... --service` + `sc start` pair ONLY when `stop-service != "Y"`.
+    // That flag is a *runtime* toggle: the tray's "Stop service" item
+    // (`tray.rs`), the GUI toggle (`ui_interface.rs`) and `--uninstall-service`
+    // all persist `stop-service = 'Y'` into
+    // `%APPDATA%\\<App>\\config\\<App>2.toml`, and `--uninstall` does NOT
+    // delete that file. So once the service had ever been stopped by hand on a
+    // machine, every later `--silent-install` on it would run the whole
+    // installer, copy the exe, write the registry, add the firewall rules, run
+    // the `--import-config` step, and then silently emit no service at all --
+    // exit code 0, no error, no service. That is what happened on every
+    // Windows machine in this deployment that had ever had its service stopped
+    // by hand -- they shared one deploy script, so all of them had.
+    //
+    // `install_service()` already clears the flag first for exactly this
+    // reason; `install_me()` did not, and that asymmetry was the whole bug.
+    // An explicit install is an explicit request for a working install, so a
+    // stale toggle from a previous installation must not suppress it.
+    Config::set_option("stop-service".into(), "".into());
+
     // Remember to check if `update_me` need to be changed if changing the `cmds`.
     // No need to merge the existing dup code, because the code in these two functions are too critical.
     // New code should be written in a common function.

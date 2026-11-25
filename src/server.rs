@@ -367,8 +367,8 @@ async fn create_relay_connection_(
 ///
 /// The VPN leg to one of our hosts drops ~20% of 1400-byte packets but ~9% of
 /// small ones, and its MTU cannot be changed without affecting other traffic.
-/// Clamping the MSS on our own relay socket shrinks only our packets. Set
-/// before connect, it bounds both what we send and the MSS we advertise.
+/// Clamping the MSS on our own relay socket shrinks only our packets -- the
+/// host -> relay direction, which is the one carrying video.
 fn relay_mss() -> Option<u32> {
     Config::get_option("fast-relay-mss")
         .parse::<u32>()
@@ -386,24 +386,33 @@ async fn connect_relay_with_mss(target: &str, mss: u32) -> ResultType<Stream> {
         } else {
             tokio::net::TcpSocket::new_v6()?
         };
-        let v: hbb_common::libc::c_int = mss as _;
-        let rc = unsafe {
-            hbb_common::libc::setsockopt(
-                socket.as_raw_fd(),
-                hbb_common::libc::IPPROTO_TCP,
-                hbb_common::libc::TCP_MAXSEG,
-                &v as *const _ as *const hbb_common::libc::c_void,
-                std::mem::size_of::<hbb_common::libc::c_int>() as _,
-            )
-        };
-        if rc != 0 {
-            hbb_common::bail!("setsockopt TCP_MAXSEG: {}", std::io::Error::last_os_error());
-        }
         match timeout(CONNECT_TIMEOUT, socket.connect(addr)).await {
             Ok(Ok(stream)) => {
                 stream.set_nodelay(true).ok();
+                // After connect, not before: XNU bounds TCP_MAXSEG by the
+                // current t_maxseg, which on an unconnected socket is the
+                // 512-byte default, so any useful value fails with EINVAL.
+                // Once connected it is the negotiated MSS (~1448) and a
+                // smaller value is accepted for what we send from here on.
+                let v: hbb_common::libc::c_int = mss as _;
+                let rc = unsafe {
+                    hbb_common::libc::setsockopt(
+                        stream.as_raw_fd(),
+                        hbb_common::libc::IPPROTO_TCP,
+                        hbb_common::libc::TCP_MAXSEG,
+                        &v as *const _ as *const hbb_common::libc::c_void,
+                        std::mem::size_of::<hbb_common::libc::c_int>() as _,
+                    )
+                };
+                if rc != 0 {
+                    log::warn!(
+                        "relay connection to {}: TCP_MAXSEG {} refused ({}), using default",
+                        addr, mss, std::io::Error::last_os_error()
+                    );
+                } else {
+                    log::info!("relay connection to {} with mss {}", addr, mss);
+                }
                 let local = stream.local_addr()?;
-                log::info!("relay connection to {} with mss {}", addr, mss);
                 return Ok(Stream::Tcp(tcp::FramedStream::from(stream, local)));
             }
             Ok(Err(e)) => last_err = Some(e.to_string()),

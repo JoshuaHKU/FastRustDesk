@@ -111,6 +111,97 @@ pub struct VideoQoS {
     adjust_ratio_instant: Instant,
     abr_config: bool,
     new_user_instant: Instant,
+    // LOCAL FORK (fast.6): see `LinkState`.
+    link: LinkState,
+}
+
+// LOCAL FORK (fast.6): link-capacity-aware bitrate cap (P1-b) and capture
+// downscale (P1-c). Fed by VideoFrameController in video_service.rs, and only
+// for connections that acknowledge frames (`video_ack_required`); without acks
+// the host cannot see past its own socket and none of this engages.
+//
+// The cap engages only when the link is *saturated*: the sender spent more than
+// half the evaluation period blocked on the in-flight limit, AND frame latency
+// is clearly above the floor. Capping on mere goodput would be a trap: when the
+// screen is quiet, goodput equals whatever we chose to send, so "0.8 x goodput"
+// would ratchet the bitrate down forever. Out of saturation the cap relaxes by
+// 25% per period until it lifts entirely.
+//
+// Capacity is estimated from back-to-back frames: when frame i was sent before
+// frame i-1 was acknowledged, ack_i - ack_{i-1} is at least frame i's transmit
+// time at the bottleneck, so bytes_i / (ack_i - ack_{i-1}) never overestimates
+// the link. A windowed max of those samples (second-highest, to shed a single
+// outlier) converges on capacity from below -- the same idea as BBR's delivery
+// rate filter.
+const LINK_WINDOW: Duration = Duration::from_secs(10);
+const LINK_EVAL_INTERVAL: Duration = Duration::from_secs(3);
+const LINK_CAP_FACTOR: f32 = 0.8;
+const SCALE_DWELL: Duration = Duration::from_secs(20);
+const SCALE_HYSTERESIS: f32 = 1.3;
+// Capture scale steps and the capacity (kbps, for a 1920x1080 display; scaled
+// by pixel count for others) below which each smaller step is chosen.
+const SCALE_STEPS: [(f32, u32); 2] = [(0.667, 2500), (0.5, 900)];
+
+#[derive(Debug, Clone)]
+struct LinkState {
+    rate_samples: VecDeque<(Instant, u32)>,    // kbps
+    latency_samples: VecDeque<(Instant, u32)>, // ms, send -> ack
+    min_latency: Option<(Instant, u32)>,
+    blocked: Duration,
+    period_start: Instant,
+    cap_kbps: Option<u32>,
+    scale: f32,
+    scale_changed: Instant,
+}
+
+impl Default for LinkState {
+    fn default() -> Self {
+        Self {
+            rate_samples: Default::default(),
+            latency_samples: Default::default(),
+            min_latency: None,
+            blocked: Duration::ZERO,
+            period_start: Instant::now(),
+            cap_kbps: None,
+            scale: 1.0,
+            scale_changed: Instant::now(),
+        }
+    }
+}
+
+impl LinkState {
+    fn prune(&mut self) {
+        let now = Instant::now();
+        while matches!(self.rate_samples.front(), Some((t, _)) if now.duration_since(*t) > LINK_WINDOW) {
+            self.rate_samples.pop_front();
+        }
+        while matches!(self.latency_samples.front(), Some((t, _)) if now.duration_since(*t) > LINK_WINDOW) {
+            self.latency_samples.pop_front();
+        }
+        // The latency floor is kept for 3 windows, so one bad stretch does not
+        // erase the memory of what an uncongested frame costs.
+        if matches!(self.min_latency, Some((t, _)) if now.duration_since(t) > LINK_WINDOW * 3) {
+            self.min_latency = None;
+        }
+    }
+
+    fn capacity_kbps(&self) -> Option<u32> {
+        if self.rate_samples.len() < 4 {
+            return None;
+        }
+        let mut v: Vec<u32> = self.rate_samples.iter().map(|x| x.1).collect();
+        v.sort_unstable();
+        Some(v[v.len() - 2])
+    }
+
+    fn median_latency(&self) -> Option<u32> {
+        if self.latency_samples.len() < 4 {
+            return None;
+        }
+        let mut v: Vec<u32> = self.latency_samples.iter().map(|x| x.1).collect();
+        v.sort_unstable();
+        Some(v[v.len() / 2])
+    }
 }
 
 impl Default for VideoQoS {
@@ -124,6 +215,7 @@ impl Default for VideoQoS {
             adjust_ratio_instant: Instant::now(),
             abr_config: true,
             new_user_instant: Instant::now(),
+            link: Default::default(),
         }
     }
 }
@@ -344,6 +436,129 @@ impl VideoQoS {
     }
 }
 
+// LOCAL FORK (fast.6): link estimation, bitrate cap, capture scale.
+impl VideoQoS {
+    /// One acknowledged frame. `rate_kbps` is present only for back-to-back
+    /// frames (see `LinkState`); `latency_ms` is send -> ack.
+    pub fn link_ack(&mut self, rate_kbps: Option<u32>, latency_ms: u32) {
+        let now = Instant::now();
+        if let Some(r) = rate_kbps {
+            self.link.rate_samples.push_back((now, r));
+        }
+        self.link.latency_samples.push_back((now, latency_ms));
+        match self.link.min_latency {
+            Some((_, m)) if m <= latency_ms => {}
+            _ => self.link.min_latency = Some((now, latency_ms)),
+        }
+    }
+
+    /// Time the sender spent blocked on the in-flight limit.
+    pub fn link_blocked(&mut self, d: Duration) {
+        self.link.blocked += d;
+    }
+
+    pub fn user_ids(&self) -> Vec<i32> {
+        self.users.keys().copied().collect()
+    }
+
+    pub fn link_cap_kbps(&self) -> Option<u32> {
+        self.link.cap_kbps
+    }
+
+    fn evaluate_link(&mut self) {
+        let elapsed = self.link.period_start.elapsed();
+        if elapsed < LINK_EVAL_INTERVAL {
+            return;
+        }
+        self.link.prune();
+        let blocked_frac = self.link.blocked.as_secs_f32() / elapsed.as_secs_f32();
+        self.link.blocked = Duration::ZERO;
+        self.link.period_start = Instant::now();
+        if Config::get_option("fast-link-cap") == "N" {
+            self.link.cap_kbps = None;
+            return;
+        }
+        let capacity = self.link.capacity_kbps();
+        let median = self.link.median_latency();
+        let floor = self.link.min_latency.map(|x| x.1);
+        let saturated = blocked_frac > 0.5
+            && matches!((median, floor), (Some(m), Some(f)) if m as f32 > f as f32 * 1.5 + 50.0);
+        let old = self.link.cap_kbps;
+        if saturated {
+            if let Some(c) = capacity {
+                self.link.cap_kbps = Some(((c as f32 * LINK_CAP_FACTOR) as u32).max(100));
+            }
+        } else if let Some(c) = self.link.cap_kbps {
+            let relaxed = (c as f32 * 1.25) as u32;
+            // Lift entirely once it no longer constrains the encoder.
+            let br = self.bitrate();
+            self.link.cap_kbps = if br > 0 && relaxed > br.saturating_mul(2) {
+                None
+            } else {
+                Some(relaxed)
+            };
+        }
+        log::debug!(
+            "link: blocked={:.2} capacity={:?}kbps latency median={:?} floor={:?} saturated={} cap {:?} -> {:?} bitrate={}",
+            blocked_frac, capacity, median, floor, saturated, old, self.link.cap_kbps, self.bitrate()
+        );
+    }
+
+    fn apply_link_cap(&mut self) {
+        let Some(cap) = self.link.cap_kbps else {
+            return;
+        };
+        let br = self.bitrate();
+        if br == 0 || br <= cap {
+            return;
+        }
+        let capped = (self.ratio * cap as f32 / br as f32).max(BR_MIN_HIGH_RESOLUTION);
+        if capped < self.ratio {
+            self.ratio = capped;
+        }
+    }
+
+    /// Capture scale for a display of `w` x `h`, for connections that all
+    /// acknowledge frames (`all_ack`). Steps down when the saturated-link cap
+    /// is low, back up (with hysteresis) when it relaxes; at most one change
+    /// per SCALE_DWELL, because each change restarts the video service and
+    /// costs a keyframe.
+    pub fn capture_scale(&mut self, w: usize, h: usize, all_ack: bool) -> f32 {
+        if !all_ack || Config::get_option("fast-downscale") == "N" {
+            return 1.0;
+        }
+        let cur = self.link.scale;
+        if self.link.scale_changed.elapsed() < SCALE_DWELL {
+            return cur;
+        }
+        let px_factor = (w * h) as f32 / (1920.0 * 1080.0);
+        let want = match self.link.cap_kbps {
+            None => 1.0,
+            Some(cap) => {
+                let mut want = 1.0;
+                for (step, thr) in SCALE_STEPS {
+                    let thr = thr as f32 * px_factor;
+                    // Going up (to a larger scale than now) needs the cap to
+                    // clear the threshold by the hysteresis margin.
+                    let thr = if step < cur { thr } else { thr * SCALE_HYSTERESIS };
+                    if (cap as f32) < thr {
+                        want = step;
+                    }
+                }
+                want
+            }
+        };
+        // Never go below 360 lines.
+        let want = if (h as f32 * want) < 360.0 { cur.max(360.0 / h as f32).min(1.0) } else { want };
+        if (want - cur).abs() > 0.01 {
+            log::info!("link: capture scale {} -> {} (cap {:?}kbps)", cur, want, self.link.cap_kbps);
+            self.link.scale = want;
+            self.link.scale_changed = Instant::now();
+        }
+        self.link.scale
+    }
+}
+
 // Common adjust functions
 impl VideoQoS {
     pub fn new_display(&mut self, video_service_name: String) {
@@ -375,6 +590,8 @@ impl VideoQoS {
         } else {
             self.ratio = self.latest_quality().ratio();
         }
+        self.evaluate_link();
+        self.apply_link_cap();
     }
 
     #[inline]

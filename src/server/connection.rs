@@ -1150,6 +1150,7 @@ impl Connection {
             conn.lr.my_id.clone(),
         );
         video_service::notify_video_frame_fetched_by_conn_id(id, None);
+        video_service::set_conn_video_ack(id, false);
         if conn.authorized {
             password::update_temporary_password();
         }
@@ -2647,6 +2648,8 @@ impl Connection {
             }
         }
         self.video_ack_required = lr.video_ack_required;
+        // LOCAL FORK (fast.6): let the video service know whose acks to trust.
+        video_service::set_conn_video_ack(self.inner.id, lr.video_ack_required);
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]

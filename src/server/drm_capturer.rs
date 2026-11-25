@@ -1301,6 +1301,7 @@ pub(super) fn get_capturer_info(
         current: display_idx,
         privacy_mode_id: 0,
         _capturer_privacy_mode_id: 0,
+        enc_override: None,
         capturer: Box::new(capturer),
     })
 }

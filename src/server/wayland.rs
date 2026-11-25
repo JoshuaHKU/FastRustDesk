@@ -520,6 +520,7 @@ pub(super) fn get_capturer_for_display(
                 current: cap_display_info.current,
                 privacy_mode_id: 0,
                 _capturer_privacy_mode_id: 0,
+                enc_override: None,
                 capturer: Box::new(cap_display_info.capturer.clone()),
             })
         }

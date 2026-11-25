@@ -15,13 +15,22 @@ pub struct Capturer {
 
 impl Capturer {
     pub fn new(display: Display) -> io::Result<Capturer> {
+        let (w, h) = (display.width(), display.height());
+        Self::new_with_size(display, w, h)
+    }
+
+    /// LOCAL FORK (fast.6): capture at `width` x `height` instead of the
+    /// display's native size. ScreenCaptureKit scales on the GPU, so the frames
+    /// (and the IOSurfaces the zero-copy encoder takes) simply come out smaller;
+    /// nothing downstream converts or copies more. Used for P1-c downscale.
+    pub fn new_with_size(display: Display, width: usize, height: usize) -> io::Result<Capturer> {
         let frame = Arc::new(Mutex::new(None));
 
         let f = frame.clone();
         let inner = sck::Capturer::new(
             display.0,
-            display.width(),
-            display.height(),
+            width,
+            height,
             quartz::PixelFormat::Argb8888,
             Default::default(),
             move |inner| {

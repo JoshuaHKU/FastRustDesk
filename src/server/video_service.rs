@@ -77,6 +77,10 @@ lazy_static::lazy_static! {
     pub static ref VIDEO_QOS: Arc<Mutex<VideoQoS>> = Default::default();
     pub static ref IS_UAC_RUNNING: Arc<Mutex<bool>> = Default::default();
     pub static ref IS_FOREGROUND_WINDOW_ELEVATED: Arc<Mutex<bool>> = Default::default();
+    // LOCAL FORK (fast.6): connections that acknowledge each video frame
+    // (LoginRequest.video_ack_required). Only their acks mean "arrived at the
+    // client"; for everyone else "fetched" means "handed to our own socket".
+    static ref VIDEO_ACK_CONNS: Mutex<HashSet<i32>> = Default::default();
     static ref SCREENSHOTS: Mutex<HashMap<(VideoSource, usize), Screenshot>> = Default::default();
 }
 
@@ -84,6 +88,39 @@ struct Screenshot {
     sid: String,
     tx: Sender,
     restore_vram: bool,
+}
+
+/// LOCAL FORK (fast.6): record whether a connection acknowledges frames.
+pub fn set_conn_video_ack(conn_id: i32, on: bool) {
+    let mut set = VIDEO_ACK_CONNS.lock().unwrap();
+    if on {
+        set.insert(conn_id);
+    } else {
+        set.remove(&conn_id);
+    }
+}
+
+/// LOCAL FORK (fast.6): true when there is at least one QoS user and every one
+/// of them acknowledges frames -- the precondition for capture downscale, since
+/// only fast.5+ clients both ack and are known to stretch a smaller frame to
+/// the display size.
+#[cfg(target_os = "macos")]
+fn all_users_ack() -> bool {
+    let acks = VIDEO_ACK_CONNS.lock().unwrap().clone();
+    let qos = VIDEO_QOS.lock().unwrap();
+    let ids = qos.user_ids();
+    !ids.is_empty() && ids.iter().all(|id| acks.contains(id))
+}
+
+/// LOCAL FORK (fast.6): frames an acknowledging connection may have in flight.
+/// 1 reproduces upstream's stop-and-wait; 2 (default) lets the next frame use
+/// the round trip the previous one is spending, which on a 235 ms link is the
+/// difference between a ~4 fps ceiling and ~8.
+fn video_inflight_limit() -> usize {
+    Config::get_option("fast-video-inflight")
+        .parse::<usize>()
+        .unwrap_or(2)
+        .clamp(1, 4)
 }
 
 #[inline]
@@ -120,6 +157,13 @@ struct VideoFrameController {
     display_idx: usize,
     cur: Instant,
     send_conn_ids: HashSet<i32>,
+    // LOCAL FORK (fast.6): per connection, frames sent and not yet fetched or
+    // acknowledged: (sent at, encoded bytes).
+    inflight: HashMap<i32, std::collections::VecDeque<(Instant, usize)>>,
+    // Per acknowledging connection: when its last ack arrived. For capacity
+    // samples, see on_fetched and VideoQoS.
+    last_ack: HashMap<i32, Instant>,
+    inflight_limit: usize,
 }
 
 impl VideoFrameController {
@@ -128,6 +172,9 @@ impl VideoFrameController {
             display_idx,
             cur: Instant::now(),
             send_conn_ids: HashSet::new(),
+            inflight: HashMap::new(),
+            last_ack: HashMap::new(),
+            inflight_limit: video_inflight_limit(),
         }
     }
 
@@ -135,24 +182,127 @@ impl VideoFrameController {
         self.send_conn_ids.clear();
     }
 
-    fn set_send(&mut self, tm: Instant, conn_ids: HashSet<i32>) {
+    fn set_send(&mut self, tm: Instant, conn_ids: HashSet<i32>, bytes: usize) {
         if !conn_ids.is_empty() {
             self.cur = tm;
+            // Forget connections that are no longer subscribed.
+            self.inflight.retain(|id, _| conn_ids.contains(id));
+            self.last_ack.retain(|id, _| conn_ids.contains(id));
+            for id in conn_ids.iter() {
+                self.inflight.entry(*id).or_default().push_back((tm, bytes));
+            }
             self.send_conn_ids = conn_ids;
-            DISPLAY_CONN_IDS
-                .lock()
-                .unwrap()
-                .insert(self.display_idx, self.send_conn_ids.clone());
+            self.publish_conn_ids();
         }
     }
 
-    #[tokio::main(flavor = "current_thread")]
-    async fn try_wait_next(&mut self, fetched_conn_ids: &mut HashSet<i32>, timeout_millis: u64) {
-        if self.send_conn_ids.is_empty() {
+    /// Route acks (which carry no display index) to this display for every
+    /// connection that still has a frame in flight here. Upstream removed the
+    /// entry right after each wait; with more than one frame in flight an ack
+    /// can legitimately arrive after the wait ended, and must not be dropped.
+    fn publish_conn_ids(&self) {
+        let ids: HashSet<i32> = self
+            .inflight
+            .iter()
+            .filter(|(_, q)| !q.is_empty())
+            .map(|(id, _)| *id)
+            .collect();
+        let mut map = DISPLAY_CONN_IDS.lock().unwrap();
+        if ids.is_empty() {
+            map.remove(&self.display_idx);
+        } else {
+            map.insert(self.display_idx, ids);
+        }
+    }
+
+    fn on_fetched(&mut self, id: i32, ack_conns: &HashSet<i32>) {
+        let Some((sent, bytes)) = self.inflight.get_mut(&id).and_then(|q| q.pop_front()) else {
+            return;
+        };
+        if !ack_conns.contains(&id) {
             return;
         }
+        let now = Instant::now();
+        let latency_ms = now.duration_since(sent).as_millis() as u32;
+        // Back-to-back: this frame left before the previous one was acked, so
+        // the gap between the two acks is at least this frame's transmit time.
+        let rate = match self.last_ack.get(&id) {
+            Some(prev) if sent < *prev => {
+                let dt = now.duration_since(*prev).as_secs_f32().max(0.010);
+                Some(((bytes as f32 * 8.0 / 1000.0) / dt) as u32)
+            }
+            _ => None,
+        };
+        self.last_ack.insert(id, now);
+        VIDEO_QOS.lock().unwrap().link_ack(rate, latency_ms);
+    }
 
-        let timeout_dur = Duration::from_millis(timeout_millis as u64);
+    fn limit_for(&self, id: &i32, ack_conns: &HashSet<i32>) -> usize {
+        if ack_conns.contains(id) {
+            self.inflight_limit
+        } else {
+            1
+        }
+    }
+
+    /// Wait until every connection is below its in-flight limit, or timeout.
+    /// Non-acknowledging connections have a limit of 1, which is exactly
+    /// upstream's "wait until the current frame was fetched".
+    fn wait_inflight(&mut self, timeout_millis: u64) {
+        if self.inflight.values().all(|q| q.is_empty()) {
+            // Nothing sent and unconfirmed (e.g. a static screen): no reason to
+            // spin up a runtime just to find an empty channel.
+            return;
+        }
+        let ack_conns = VIDEO_ACK_CONNS.lock().unwrap().clone();
+        let begin = Instant::now();
+        // Take whatever has already arrived without blocking.
+        for id in self.drain_fetched(0) {
+            self.on_fetched(id, &ack_conns);
+        }
+        let mut blocked_since: Option<Instant> = None;
+        loop {
+            let blocked = self
+                .inflight
+                .iter()
+                .any(|(id, q)| q.len() >= self.limit_for(id, &ack_conns));
+            if !blocked {
+                break;
+            }
+            blocked_since.get_or_insert_with(Instant::now);
+            if begin.elapsed().as_millis() >= timeout_millis as u128 {
+                // Give up on frames that never got fetched/acked, as upstream
+                // did by simply moving on; otherwise one lost ack would block
+                // every following frame until timeout.
+                let limits: Vec<(i32, usize)> = self
+                    .inflight
+                    .keys()
+                    .map(|id| (*id, self.limit_for(id, &ack_conns)))
+                    .collect();
+                for (id, limit) in limits {
+                    if let Some(q) = self.inflight.get_mut(&id) {
+                        while q.len() >= limit {
+                            q.pop_front();
+                        }
+                    }
+                }
+                break;
+            }
+            for id in self.drain_fetched(300) {
+                self.on_fetched(id, &ack_conns);
+            }
+        }
+        if let Some(t) = blocked_since {
+            VIDEO_QOS.lock().unwrap().link_blocked(t.elapsed());
+        }
+        self.publish_conn_ids();
+    }
+
+    /// Fetch notifications as a list of connection ids, one entry per
+    /// notification (several frames may be fetched by one connection).
+    #[tokio::main(flavor = "current_thread")]
+    async fn drain_fetched(&mut self, timeout_millis: u64) -> Vec<i32> {
+        let mut out = Vec::new();
         let receiver = {
             match FRAME_FETCHED_NOTIFIERS
                 .lock()
@@ -160,36 +310,23 @@ impl VideoFrameController {
                 .get(&self.display_idx)
             {
                 Some(notifier) => notifier.1.clone(),
-                None => {
-                    return;
-                }
+                None => return out,
             }
         };
-        let mut receiver_guard = receiver.lock().await;
-        match tokio::time::timeout(timeout_dur, receiver_guard.recv()).await {
-            Err(_) => {
-                // break if timeout
-                // log::error!("blocking wait frame receiving timeout {}", timeout_millis);
-            }
-            Ok(Some((id, instant))) => {
-                if let Some(tm) = instant {
-                    log::trace!("Channel recv latency: {}", tm.elapsed().as_secs_f32());
-                }
-                fetched_conn_ids.insert(id);
-            }
-            Ok(None) => {
-                // this branch would never be reached
+        let mut guard = receiver.lock().await;
+        if timeout_millis > 0 {
+            if let Ok(Some((id, _))) =
+                tokio::time::timeout(Duration::from_millis(timeout_millis), guard.recv()).await
+            {
+                out.push(id);
             }
         }
-        while !receiver_guard.is_empty() {
-            if let Some((id, instant)) = receiver_guard.recv().await {
-                if let Some(tm) = instant {
-                    log::trace!("Channel recv latency: {}", tm.elapsed().as_secs_f32());
-                }
-                fetched_conn_ids.insert(id);
-            }
+        while let Ok((id, _)) = guard.try_recv() {
+            out.push(id);
         }
+        out
     }
+
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -264,6 +401,7 @@ fn create_capturer(
     display: Display,
     _current: usize,
     _portable_service_running: bool,
+    _size: Option<(usize, usize)>,
 ) -> ResultType<Box<dyn TraitCapturer>> {
     #[cfg(not(windows))]
     let c: Option<Box<dyn TraitCapturer>> = None;
@@ -302,6 +440,13 @@ fn create_capturer(
             #[cfg(not(windows))]
             {
                 log::debug!("Create capturer from scrap");
+                #[cfg(target_os = "macos")]
+                if let Some((w, h)) = _size {
+                    return Ok(Box::new(
+                        Capturer::new_with_size(display, w, h)
+                            .with_context(|| "Failed to create capturer")?,
+                    ));
+                }
                 return Ok(Box::new(
                     Capturer::new(display).with_context(|| "Failed to create capturer")?,
                 ));
@@ -328,7 +473,7 @@ pub fn test_create_capturer(
                     )
                 } else {
                     let display = displays.remove(display_idx);
-                    match create_capturer(privacy_mode_id, display, display_idx, false) {
+                    match create_capturer(privacy_mode_id, display, display_idx, false, None) {
                         Ok(_) => return "".to_owned(),
                         Err(e) => e,
                     }
@@ -372,6 +517,26 @@ pub(super) struct CapturerInfo {
     pub privacy_mode_id: i32,
     pub _capturer_privacy_mode_id: i32,
     pub capturer: Box<dyn TraitCapturer>,
+    // LOCAL FORK (fast.6): encode/capture size when it differs from the
+    // display (P1-c downscale). `width`/`height` stay the DISPLAY size: they are
+    // compared against the display list to detect real display changes, and
+    // the client keeps mapping the mouse in display coordinates.
+    pub enc_override: Option<(usize, usize)>,
+}
+
+impl CapturerInfo {
+    pub fn enc_width(&self) -> usize {
+        self.enc_override.map(|x| x.0).unwrap_or(self.width)
+    }
+    pub fn enc_height(&self) -> usize {
+        self.enc_override.map(|x| x.1).unwrap_or(self.height)
+    }
+    pub fn scale(&self) -> f32 {
+        match self.enc_override {
+            Some((w, _)) if self.width > 0 => w as f32 / self.width as f32,
+            _ => 1.0,
+        }
+    }
 }
 
 impl Deref for CapturerInfo {
@@ -464,11 +629,29 @@ fn get_capturer_monitor(
             log::info!("In privacy mode, the peer side cannot watch the screen");
         }
     }
+    // LOCAL FORK (fast.6): P1-c. Only macOS can capture at a smaller size
+    // (ScreenCaptureKit scales on the GPU); elsewhere this stays None.
+    #[cfg(target_os = "macos")]
+    let enc_override = {
+        let all_ack = all_users_ack();
+        let s = VIDEO_QOS.lock().unwrap().capture_scale(width, height, all_ack);
+        if s < 0.99 {
+            let even = |v: f32| ((v / 2.0).round() as usize) * 2;
+            let size = (even(width as f32 * s), even(height as f32 * s));
+            log::info!("capture {}x{} at scale {} -> {}x{}", width, height, s, size.0, size.1);
+            Some(size)
+        } else {
+            None
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let enc_override: Option<(usize, usize)> = None;
     let capturer = create_capturer(
         capturer_privacy_mode_id,
         display,
         current,
         portable_service_running,
+        enc_override,
     )?;
     Ok(CapturerInfo {
         origin,
@@ -479,6 +662,7 @@ fn get_capturer_monitor(
         privacy_mode_id,
         _capturer_privacy_mode_id: capturer_privacy_mode_id,
         capturer,
+        enc_override,
     })
 }
 
@@ -520,6 +704,7 @@ fn get_capturer_camera(current: usize) -> ResultType<CapturerInfo> {
         privacy_mode_id,
         _capturer_privacy_mode_id: privacy_mode_id,
         capturer,
+        enc_override: None,
     });
 }
 fn get_capturer(
@@ -595,8 +780,8 @@ fn run(vs: VideoService) -> ResultType<()> {
         Err(err) => {
             log::error!("Failed to create encoder: {err:?}, fallback to VP9");
             Encoder::set_fallback(&EncoderCfg::VPX(VpxEncoderConfig {
-                width: c.width as _,
-                height: c.height as _,
+                width: c.enc_width() as _,
+                height: c.enc_height() as _,
                 quality,
                 codec: VpxVideoCodecId::VP9,
                 keyframe_interval: None,
@@ -652,8 +837,12 @@ fn run(vs: VideoService) -> ResultType<()> {
     let repeat_encode_max = 10;
     let mut encode_fail_counter = 0;
     let mut first_frame = true;
-    let capture_width = c.width;
-    let capture_height = c.height;
+    let capture_width = c.enc_width();
+    let capture_height = c.enc_height();
+    // LOCAL FORK (fast.6): the capture scale this capturer was built with; when
+    // VIDEO_QOS wants another, restart (see the check in the loop).
+    #[cfg(target_os = "macos")]
+    let built_scale = c.scale();
     let (mut second_instant, mut send_counter) = (Instant::now(), 0);
 
     while sp.ok() {
@@ -674,6 +863,22 @@ fn run(vs: VideoService) -> ResultType<()> {
             }
             log::info!("switch to refresh");
             bail!("SWITCH");
+        }
+        // LOCAL FORK (fast.6): P1-c. Rebuild the capturer when the link
+        // wants another capture scale. The display size the client sees is
+        // unchanged, so this is not a display change for it -- just a new
+        // keyframe at a different resolution.
+        #[cfg(target_os = "macos")]
+        if vs.source.is_monitor() {
+            let all_ack = all_users_ack();
+            let want = VIDEO_QOS
+                .lock()
+                .unwrap()
+                .capture_scale(c.width, c.height, all_ack);
+            if (want - built_scale).abs() > 0.01 {
+                log::info!("switch due to capture scale {} -> {}", built_scale, want);
+                bail!("SWITCH");
+            }
         }
         if codec_format != Encoder::negotiated_codec() {
             log::info!(
@@ -795,7 +1000,7 @@ fn run(vs: VideoService) -> ResultType<()> {
                         capture_width,
                         capture_height,
                     )?;
-                    frame_controller.set_send(now, send_conn_ids);
+                    frame_controller.set_send(now, send_conn_ids.0, send_conn_ids.1);
                     send_counter += 1;
                 }
                 #[cfg(windows)]
@@ -854,7 +1059,7 @@ fn run(vs: VideoService) -> ResultType<()> {
                             capture_width,
                             capture_height,
                         )?;
-                        frame_controller.set_send(now, send_conn_ids);
+                        frame_controller.set_send(now, send_conn_ids.0, send_conn_ids.1);
                         send_counter += 1;
                     }
                 }
@@ -882,20 +1087,12 @@ fn run(vs: VideoService) -> ResultType<()> {
             }
         }
 
-        let mut fetched_conn_ids = HashSet::new();
-        let timeout_millis = 3_000u64;
-        let wait_begin = Instant::now();
-        while wait_begin.elapsed().as_millis() < timeout_millis as _ {
-            if vs.source.is_monitor() {
-                check_privacy_mode_changed(&sp, display_idx, &c)?;
-            }
-            frame_controller.try_wait_next(&mut fetched_conn_ids, 300);
-            // break if all connections have received current frame
-            if fetched_conn_ids.len() >= frame_controller.send_conn_ids.len() {
-                break;
-            }
+        // LOCAL FORK (fast.6): in-flight window instead of "wait until the
+        // current frame was fetched by everyone"; see wait_inflight.
+        if vs.source.is_monitor() {
+            check_privacy_mode_changed(&sp, display_idx, &c)?;
         }
-        DISPLAY_CONN_IDS.lock().unwrap().remove(&display_idx);
+        frame_controller.wait_inflight(3_000);
 
         let elapsed = now.elapsed();
         // may need to enable frame(timeout)
@@ -996,8 +1193,8 @@ fn get_encoder_config(
             if let Some(feature) = VRamEncoder::try_get(&c.device(), negotiated_codec) {
                 return EncoderCfg::VRAM(VRamEncoderConfig {
                     device: c.device(),
-                    width: c.width,
-                    height: c.height,
+                    width: c.enc_width(),
+                    height: c.enc_height(),
                     quality,
                     feature,
                     keyframe_interval,
@@ -1025,8 +1222,8 @@ fn get_encoder_config(
             {
                 log::info!("using zero-copy VideoToolbox encoder for H265");
                 return EncoderCfg::VTENC(scrap::vtenc::encoder::VtEncoderConfig {
-                    width: c.width,
-                    height: c.height,
+                    width: c.enc_width(),
+                    height: c.enc_height(),
                     quality,
                     keyframe_interval,
                 });
@@ -1036,23 +1233,23 @@ fn get_encoder_config(
                 return EncoderCfg::HWRAM(HwRamEncoderConfig {
                     name: hw.name,
                     mc_name: hw.mc_name,
-                    width: c.width,
-                    height: c.height,
+                    width: c.enc_width(),
+                    height: c.enc_height(),
                     quality,
                     keyframe_interval,
                 });
             }
             EncoderCfg::VPX(VpxEncoderConfig {
-                width: c.width as _,
-                height: c.height as _,
+                width: c.enc_width() as _,
+                height: c.enc_height() as _,
                 quality,
                 codec: VpxVideoCodecId::VP9,
                 keyframe_interval,
             })
         }
         format @ (CodecFormat::VP8 | CodecFormat::VP9) => EncoderCfg::VPX(VpxEncoderConfig {
-            width: c.width as _,
-            height: c.height as _,
+            width: c.enc_width() as _,
+            height: c.enc_height() as _,
             quality,
             codec: if format == CodecFormat::VP8 {
                 VpxVideoCodecId::VP8
@@ -1062,14 +1259,14 @@ fn get_encoder_config(
             keyframe_interval,
         }),
         CodecFormat::AV1 => EncoderCfg::AOM(AomEncoderConfig {
-            width: c.width as _,
-            height: c.height as _,
+            width: c.enc_width() as _,
+            height: c.enc_height() as _,
             quality,
             keyframe_interval,
         }),
         _ => EncoderCfg::VPX(VpxEncoderConfig {
-            width: c.width as _,
-            height: c.height as _,
+            width: c.enc_width() as _,
+            height: c.enc_height() as _,
             quality,
             codec: VpxVideoCodecId::VP9,
             keyframe_interval,
@@ -1183,7 +1380,7 @@ fn handle_one_frame(
     first_frame: &mut bool,
     width: usize,
     height: usize,
-) -> ResultType<HashSet<i32>> {
+) -> ResultType<(HashSet<i32>, usize)> {
     sp.snapshot(|sps| {
         // so that new sub and old sub share the same encoder after switch
         if sps.has_subscribes() {
@@ -1194,6 +1391,7 @@ fn handle_one_frame(
     })?;
 
     let mut send_conn_ids: HashSet<i32> = Default::default();
+    let mut bytes = 0usize;
     let first = *first_frame;
     *first_frame = false;
     match encoder.encode_to_message(frame, ms) {
@@ -1207,6 +1405,7 @@ fn handle_one_frame(
                 .unwrap()
                 .as_mut()
                 .map(|r| r.write_message(&msg, width, height));
+            bytes = msg.compute_size() as usize;
             send_conn_ids = sp.send_video_frame(msg);
         }
         Err(e) => {
@@ -1240,7 +1439,7 @@ fn handle_one_frame(
             }
         }
     }
-    Ok(send_conn_ids)
+    Ok((send_conn_ids, bytes))
 }
 
 #[inline]

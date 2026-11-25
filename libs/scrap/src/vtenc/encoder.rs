@@ -175,11 +175,32 @@ impl EncoderApi for VtEncoder {
         if bitrate == 0 {
             bail!("invalid bitrate");
         }
-        // VideoToolbox takes a live bitrate change, but the crate's builder owns
-        // that property, so rebuild the session. Rebuilding costs a keyframe --
-        // acceptable for a quality change, which is user-initiated and rare.
         self.config.quality = ratio;
-        self.session = Self::build_session(&self.config, bitrate)?;
+        // LOCAL FORK (fast.6): change the bitrate on the live session. This
+        // used to rebuild the session on the theory that quality changes are
+        // user-initiated and rare -- they are not: the host's ABR adjusts the
+        // ratio every 3 s on a high-delay link, and every rebuild forced a
+        // keyframe, i.e. a full-size frame every 3 s on exactly the links that
+        // can least afford one. AverageBitRate is documented as settable at any
+        // time; fall back to the rebuild only if VideoToolbox refuses.
+        let bps: i32 = (bitrate as i32).saturating_mul(1000);
+        let live = unsafe {
+            use videotoolbox::ffi;
+            let num = ffi::CFNumberCreate(
+                ffi::kCFAllocatorDefault,
+                ffi::kCFNumberSInt32Type,
+                (&bps as *const i32).cast(),
+            );
+            let r = self
+                .session
+                .set_property(ffi::kVTCompressionPropertyKey_AverageBitRate, num.cast());
+            ffi::CFRelease(num.cast());
+            r
+        };
+        if let Err(e) = live {
+            log::warn!("live bitrate change refused ({e:?}); rebuilding the session");
+            self.session = Self::build_session(&self.config, bitrate)?;
+        }
         self.bitrate = bitrate;
         Ok(())
     }

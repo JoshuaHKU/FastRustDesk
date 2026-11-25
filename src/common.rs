@@ -956,6 +956,14 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 }
 
 pub fn check_software_update() {
+    // LOCAL FORK: never check. `do_check_software_update` below already returns
+    // before it makes a request, so this is belt-and-braces: it stops the
+    // thread from being spawned and keeps the Sciter UI's call (src/ui.rs) just
+    // as dead as the Flutter one. `if true` rather than a bare `return` so the
+    // original body stays warning-free and easy to restore.
+    if true {
+        return;
+    }
     if is_custom_client() {
         return;
     }

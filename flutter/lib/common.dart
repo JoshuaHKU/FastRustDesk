@@ -4089,22 +4089,14 @@ void earlyAssert() {
   assert('\1' == '1');
 }
 
-void checkUpdate() {
-  if (!isWeb) {
-    if (!bind.isCustomClient()) {
-      platformFFI.registerEventHandler(
-          kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
-          (Map<String, dynamic> evt) async {
-        if (evt['url'] is String) {
-          stateGlobal.updateUrl.value = evt['url'];
-        }
-      });
-      Timer(const Duration(seconds: 1), () async {
-        bind.mainGetSoftwareUpdateUrl();
-      });
-    }
-  }
-}
+// LOCAL FORK: no-op. The update check is disabled in the Rust layer (see
+// `do_check_software_update` in src/common.rs) and the banners it fed have been
+// removed from both desktop_home_page.dart and mobile/connection_page.dart, so
+// there is nothing left to register a handler for or to poll one second after
+// start. Kept as an empty function because main.dart calls it on every entry
+// point. To restore the upstream behaviour, re-add the handler for
+// kCheckSoftwareUpdateFinish and the bind.mainGetSoftwareUpdateUrl() timer.
+void checkUpdate() {}
 
 // https://github.com/flutter/flutter/issues/153560#issuecomment-2497160535
 // For TextField, TextFormField

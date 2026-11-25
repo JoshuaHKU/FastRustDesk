@@ -73,6 +73,8 @@ pub struct Remote<T: InvokeUiSession> {
     last_update_jobs_status: (Instant, HashMap<i32, u64>),
     is_connected: bool,
     first_frame: bool,
+    // LOCAL FORK (fast.5): see LoginConfigHandler::video_ack_enabled.
+    video_ack: Option<bool>,
     #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
     client_conn_id: i32, // used for file clipboard
     data_count: Arc<AtomicUsize>,
@@ -120,6 +122,7 @@ impl<T: InvokeUiSession> Remote<T> {
             last_update_jobs_status: (Instant::now(), Default::default()),
             is_connected: false,
             first_frame: false,
+            video_ack: None,
             #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
             client_conn_id: 0,
             data_count: Arc::new(AtomicUsize::new(0)),
@@ -1329,6 +1332,20 @@ impl<T: InvokeUiSession> Remote<T> {
                         self.send_toggle_privacy_mode_msg(peer).await;
                     }
                     self.video_format = CodecFormat::from(&vf);
+
+                    // LOCAL FORK (fast.5): acknowledge on arrival, before the
+                    // frame is queued for decoding. What the host must not
+                    // outrun is the network; local decode is milliseconds.
+                    let video_ack = *self.video_ack.get_or_insert_with(|| {
+                        self.handler.lc.read().unwrap().video_ack_enabled()
+                    });
+                    if video_ack {
+                        let mut misc = Misc::new();
+                        misc.set_video_received(true);
+                        let mut msg = Message::new();
+                        msg.set_misc(misc);
+                        allow_err!(peer.send(&msg).await);
+                    }
 
                     let display = vf.display as usize;
                     if !self.video_threads.contains_key(&display) {

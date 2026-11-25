@@ -2542,6 +2542,24 @@ impl LoginConfigHandler {
         }
     }
 
+    /// LOCAL FORK (fast.5): per-frame video acknowledgement.
+    ///
+    /// Stock native clients never set `LoginRequest.video_ack_required`, so the
+    /// host counts a frame as delivered the moment it is handed to its own
+    /// socket (server/connection.rs, the `rx_video` arm). On a slow relayed link
+    /// that lets seconds of video pile up in TCP and relay buffers while the
+    /// host keeps encoding -- the multi-second p95 delay measured on a slow relayed link.
+    /// With the flag set, the host waits (up to 3 s) for our `VideoReceived`
+    /// before sending the next frame, so at most one frame is in flight. The
+    /// host side of this already exists upstream (the web client uses it), so
+    /// it also works against stock hosts.
+    ///
+    /// On by default; set the peer option `fast-video-ack = 'N'` to turn it
+    /// off for A/B measurement.
+    pub fn video_ack_enabled(&self) -> bool {
+        self.get_option("fast-video-ack") != "N"
+    }
+
     #[inline]
     pub fn get_custom_resolution(&self, display: i32) -> Option<(i32, i32)> {
         self.config
@@ -2783,8 +2801,10 @@ impl LoginConfigHandler {
             .into(),
             hwid,
             avatar,
+            video_ack_required: self.video_ack_enabled(),
             ..Default::default()
         };
+        log::info!("video ack required: {}", lr.video_ack_required);
         match self.conn_type {
             ConnType::FILE_TRANSFER => lr.set_file_transfer(FileTransfer {
                 dir: self.get_remote_dir(),

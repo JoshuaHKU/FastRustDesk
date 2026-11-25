@@ -133,15 +133,26 @@ pub struct VideoQoS {
 // the link. A windowed max of those samples (second-highest, to shed a single
 // outlier) converges on capacity from below -- the same idea as BBR's delivery
 // rate filter.
+/// How far back rate and latency samples are kept.
 const LINK_WINDOW: Duration = Duration::from_secs(10);
+/// How often the cap is re-evaluated (matches upstream's ABR period).
 const LINK_EVAL_INTERVAL: Duration = Duration::from_secs(3);
+/// Target bitrate as a fraction of estimated capacity, leaving headroom for
+/// keyframes, audio and control traffic.
 const LINK_CAP_FACTOR: f32 = 0.8;
+/// Minimum time between capture-scale changes: each one restarts the video
+/// service and costs a keyframe.
 const SCALE_DWELL: Duration = Duration::from_secs(20);
+/// Margin the cap must clear before stepping back up to a larger scale.
 const SCALE_HYSTERESIS: f32 = 1.3;
 // Capture scale steps and the capacity (kbps, for a 1920x1080 display; scaled
 // by pixel count for others) below which each smaller step is chosen.
 const SCALE_STEPS: [(f32, u32); 2] = [(0.667, 2500), (0.5, 900)];
 
+/// What the host has learned about the path to its viewers from frame acks
+/// (only fast.5+ clients send them), and the decisions derived from it.
+/// One instance per process, shared across connections: the cap protects the
+/// common bottleneck, i.e. the host's uplink or the relay.
 #[derive(Debug, Clone)]
 struct LinkState {
     rate_samples: VecDeque<(Instant, u32)>,    // kbps
@@ -150,6 +161,7 @@ struct LinkState {
     blocked: Duration,
     period_start: Instant,
     cap_kbps: Option<u32>,
+    /// Current capture scale (1.0 = native) and when it last changed.
     scale: f32,
     scale_changed: Instant,
 }
@@ -170,12 +182,15 @@ impl Default for LinkState {
 }
 
 impl LinkState {
+    /// Drop samples older than `LINK_WINDOW`.
     fn prune(&mut self) {
         let now = Instant::now();
-        while matches!(self.rate_samples.front(), Some((t, _)) if now.duration_since(*t) > LINK_WINDOW) {
+        while matches!(self.rate_samples.front(), Some((t, _)) if now.duration_since(*t) > LINK_WINDOW)
+        {
             self.rate_samples.pop_front();
         }
-        while matches!(self.latency_samples.front(), Some((t, _)) if now.duration_since(*t) > LINK_WINDOW) {
+        while matches!(self.latency_samples.front(), Some((t, _)) if now.duration_since(*t) > LINK_WINDOW)
+        {
             self.latency_samples.pop_front();
         }
         // The latency floor is kept for 3 windows, so one bad stretch does not
@@ -185,6 +200,9 @@ impl LinkState {
         }
     }
 
+    /// Windowed second-highest rate sample, or `None` with fewer than 4
+    /// samples. Never above the true capacity (see the comment on
+    /// `LINK_WINDOW`), so a cap derived from it errs on the safe side.
     fn capacity_kbps(&self) -> Option<u32> {
         if self.rate_samples.len() < 4 {
             return None;
@@ -194,6 +212,7 @@ impl LinkState {
         Some(v[v.len() - 2])
     }
 
+    /// Median send -> ack latency over the window, or `None` with fewer than 4.
     fn median_latency(&self) -> Option<u32> {
         if self.latency_samples.len() < 4 {
             return None;
@@ -457,14 +476,23 @@ impl VideoQoS {
         self.link.blocked += d;
     }
 
+    /// Connection ids with an active video subscription.
     pub fn user_ids(&self) -> Vec<i32> {
         self.users.keys().copied().collect()
     }
 
+    /// The current bitrate cap, `None` when the link is not constraining.
     pub fn link_cap_kbps(&self) -> Option<u32> {
         self.link.cap_kbps
     }
 
+    /// Every `LINK_EVAL_INTERVAL`: set or relax the cap. The link counts as
+    /// saturated only when the sender spent over half the period blocked on
+    /// the in-flight limit AND median latency is well above the floor;
+    /// either alone also happens on a quiet screen or a jittery path, and
+    /// capping then would ratchet the bitrate down for nothing. When not
+    /// saturated the cap relaxes 25% per period and is dropped once it is
+    /// twice the encoder's bitrate. `fast-link-cap = N` disables it.
     fn evaluate_link(&mut self) {
         let elapsed = self.link.period_start.elapsed();
         if elapsed < LINK_EVAL_INTERVAL {
@@ -504,6 +532,8 @@ impl VideoQoS {
         );
     }
 
+    /// Pull the ABR ratio down so the encoder bitrate fits under the cap.
+    /// Only ever lowers it; raising is left to upstream's ABR.
     fn apply_link_cap(&mut self) {
         let Some(cap) = self.link.cap_kbps else {
             return;
@@ -540,7 +570,11 @@ impl VideoQoS {
                     let thr = thr as f32 * px_factor;
                     // Going up (to a larger scale than now) needs the cap to
                     // clear the threshold by the hysteresis margin.
-                    let thr = if step < cur { thr } else { thr * SCALE_HYSTERESIS };
+                    let thr = if step < cur {
+                        thr
+                    } else {
+                        thr * SCALE_HYSTERESIS
+                    };
                     if (cap as f32) < thr {
                         want = step;
                     }
@@ -549,9 +583,18 @@ impl VideoQoS {
             }
         };
         // Never go below 360 lines.
-        let want = if (h as f32 * want) < 360.0 { cur.max(360.0 / h as f32).min(1.0) } else { want };
+        let want = if (h as f32 * want) < 360.0 {
+            cur.max(360.0 / h as f32).min(1.0)
+        } else {
+            want
+        };
         if (want - cur).abs() > 0.01 {
-            log::info!("link: capture scale {} -> {} (cap {:?}kbps)", cur, want, self.link.cap_kbps);
+            log::info!(
+                "link: capture scale {} -> {} (cap {:?}kbps)",
+                cur,
+                want,
+                self.link.cap_kbps
+            );
             self.link.scale = want;
             self.link.scale_changed = Instant::now();
         }

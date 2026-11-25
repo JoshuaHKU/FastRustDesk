@@ -182,6 +182,7 @@ impl VideoFrameController {
         self.send_conn_ids.clear();
     }
 
+    /// Record a frame of `bytes` sent to `conn_ids` at `tm`.
     fn set_send(&mut self, tm: Instant, conn_ids: HashSet<i32>, bytes: usize) {
         if !conn_ids.is_empty() {
             self.cur = tm;
@@ -215,6 +216,10 @@ impl VideoFrameController {
         }
     }
 
+    /// Connection `id` fetched (or, if it acknowledges, received) its oldest
+    /// in-flight frame. For acknowledging connections this also feeds a
+    /// latency sample, and a capacity sample when the frame was back-to-back,
+    /// to `VideoQoS::link_ack`.
     fn on_fetched(&mut self, id: i32, ack_conns: &HashSet<i32>) {
         let Some((sent, bytes)) = self.inflight.get_mut(&id).and_then(|q| q.pop_front()) else {
             return;
@@ -237,6 +242,8 @@ impl VideoFrameController {
         VIDEO_QOS.lock().unwrap().link_ack(rate, latency_ms);
     }
 
+    /// In-flight limit for one connection: `fast-video-inflight` for those
+    /// that acknowledge frames, 1 (upstream behaviour) for the rest.
     fn limit_for(&self, id: &i32, ack_conns: &HashSet<i32>) -> usize {
         if ack_conns.contains(id) {
             self.inflight_limit
@@ -326,7 +333,6 @@ impl VideoFrameController {
         }
         out
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -525,12 +531,15 @@ pub(super) struct CapturerInfo {
 }
 
 impl CapturerInfo {
+    /// Width the capturer produces and the encoder is configured for.
     pub fn enc_width(&self) -> usize {
         self.enc_override.map(|x| x.0).unwrap_or(self.width)
     }
+    /// Height the capturer produces and the encoder is configured for.
     pub fn enc_height(&self) -> usize {
         self.enc_override.map(|x| x.1).unwrap_or(self.height)
     }
+    /// Encode size relative to the display, 1.0 when not downscaled.
     pub fn scale(&self) -> f32 {
         match self.enc_override {
             Some((w, _)) if self.width > 0 => w as f32 / self.width as f32,
@@ -634,11 +643,21 @@ fn get_capturer_monitor(
     #[cfg(target_os = "macos")]
     let enc_override = {
         let all_ack = all_users_ack();
-        let s = VIDEO_QOS.lock().unwrap().capture_scale(width, height, all_ack);
+        let s = VIDEO_QOS
+            .lock()
+            .unwrap()
+            .capture_scale(width, height, all_ack);
         if s < 0.99 {
             let even = |v: f32| ((v / 2.0).round() as usize) * 2;
             let size = (even(width as f32 * s), even(height as f32 * s));
-            log::info!("capture {}x{} at scale {} -> {}x{}", width, height, s, size.0, size.1);
+            log::info!(
+                "capture {}x{} at scale {} -> {}x{}",
+                width,
+                height,
+                s,
+                size.0,
+                size.1
+            );
             Some(size)
         } else {
             None

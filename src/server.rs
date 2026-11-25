@@ -338,7 +338,11 @@ async fn create_relay_connection_(
             match connect_relay_with_mss(&target, mss).await {
                 Ok(s) => Some(s),
                 Err(e) => {
-                    log::warn!("relay connect with mss {} failed ({}), falling back", mss, e);
+                    log::warn!(
+                        "relay connect with mss {} failed ({}), falling back",
+                        mss,
+                        e
+                    );
                     None
                 }
             }
@@ -365,10 +369,11 @@ async fn create_relay_connection_(
 
 /// LOCAL FORK (fast.6): host option `fast-relay-mss` (536..=1460, unset = off).
 ///
-/// The VPN leg to one of our hosts drops ~20% of 1400-byte packets but ~9% of
-/// small ones, and its MTU cannot be changed without affecting other traffic.
-/// Clamping the MSS on our own relay socket shrinks only our packets -- the
-/// host -> relay direction, which is the one carrying video.
+/// On a long, lossy path large packets can be lost markedly more often than
+/// small ones (we measured ~20% vs ~9%), and the path MTU is often not ours to
+/// change. Clamping the MSS on our own relay socket shrinks only our packets
+/// -- the host -> relay direction, which is the one carrying video -- without
+/// touching anything else on the machine or the network.
 fn relay_mss() -> Option<u32> {
     Config::get_option("fast-relay-mss")
         .parse::<u32>()
@@ -376,6 +381,8 @@ fn relay_mss() -> Option<u32> {
         .filter(|v| (536..=1460).contains(v))
 }
 
+/// Connect to the relay with `TCP_MAXSEG = mss` on the socket. A kernel that
+/// refuses the option only costs a warning; the connection is kept.
 #[cfg(unix)]
 async fn connect_relay_with_mss(target: &str, mss: u32) -> ResultType<Stream> {
     use std::os::unix::io::AsRawFd;
@@ -407,7 +414,9 @@ async fn connect_relay_with_mss(target: &str, mss: u32) -> ResultType<Stream> {
                 if rc != 0 {
                     log::warn!(
                         "relay connection to {}: TCP_MAXSEG {} refused ({}), using default",
-                        addr, mss, std::io::Error::last_os_error()
+                        addr,
+                        mss,
+                        std::io::Error::last_os_error()
                     );
                 } else {
                     log::info!("relay connection to {} with mss {}", addr, mss);

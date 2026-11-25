@@ -1336,9 +1336,9 @@ impl<T: InvokeUiSession> Remote<T> {
                     // LOCAL FORK (fast.5): acknowledge on arrival, before the
                     // frame is queued for decoding. What the host must not
                     // outrun is the network; local decode is milliseconds.
-                    let video_ack = *self.video_ack.get_or_insert_with(|| {
-                        self.handler.lc.read().unwrap().video_ack_enabled()
-                    });
+                    let video_ack = *self
+                        .video_ack
+                        .get_or_insert_with(|| self.handler.lc.read().unwrap().video_ack_enabled());
                     if video_ack {
                         let mut misc = Misc::new();
                         misc.set_video_received(true);

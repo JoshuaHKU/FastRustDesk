@@ -714,6 +714,31 @@ impl InvokeUiSession for FlutterHandler {
     fn close_success(&self) {}
 
     fn update_quality_status(&self, status: QualityStatus) {
+        // LOCAL FORK: one line of instrumentation.
+        //
+        // These six numbers are the only in-session measurement this client
+        // produces, and until now they existed *only* as a UI overlay that the
+        // user has to switch on per peer and read off the screen. That makes a
+        // measurement on a slow link impossible to do honestly: there the whole
+        // question is how `delay` behaves **over time**, and a screenshot is one
+        // sample. Logging them gives a time series that `grep` turns into
+        // min/median/p95, and it records `chroma` and `codec_format` as the
+        // session actually negotiated them rather than as configured.
+        //
+        // DEBUG level, and only when something is present -- `update_quality_status`
+        // is also called with an all-empty struct, and an idle session should stay
+        // quiet.
+        if status.delay.is_some() || status.speed.is_some() || !status.fps.is_empty() {
+            log::debug!(
+                "quality: delay={:?} speed={:?} fps={:?} target_bitrate={:?} codec={:?} chroma={:?}",
+                status.delay,
+                status.speed,
+                status.fps,
+                status.target_bitrate,
+                status.codec_format,
+                status.chroma,
+            );
+        }
         const NULL: String = String::new();
         self.push_event(
             "update_quality_status",

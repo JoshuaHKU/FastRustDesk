@@ -275,3 +275,75 @@ worst encode    : 27.7 ms
 - **无 `h264_videotoolbox`**：H265 失败会掉到 VP9 软编，不是 H264 硬编。
 - **上游无法合并**：部署目标提到 12.3、直接删掉 CGDisplayStream 后端、提交了生成文件。
 - **许可证 AGPL-3.0**：自己改自己用完全没有义务；一旦分发（哪怕只是提供网络服务）就有开源义务。
+
+---
+
+## 七、慢链路调优开关（fast.5 / fast.6）
+
+针对高 RTT、明显丢包的中转链路（例如跨洋）。所有开关都有默认值，不设置也能用；
+下面的 `N` 一律表示关闭该项。
+
+### 客户端（fast.5 起）
+
+| 开关 | 位置 | 默认 | 作用 |
+|---|---|---|---|
+| `fast-video-ack` | 对端配置 `peers/<id>.toml` 的 `[options]` 表 | 开 | 登录时置 `video_ack_required`，每收到一帧回一条 `Misc.video_received`。被控端据此知道帧是否真的送达，不再把几秒的视频堆在 TCP / 中转缓冲里 |
+
+被控端这一侧的确认逻辑是上游原有的（给 Web 客户端用），所以**连原版 RustDesk 被控端也能受益**。
+会话日志里的 `video ack required: true/false` 可以核对。
+
+编辑对端 `.toml` 前要先关掉该会话，并且**以 UTF-8（无 BOM）读写**。Windows PowerShell 5 的
+`Get-Content` / `Set-Content -Encoding UTF8` 会按系统代码页读、写回时加 BOM，客户端随后判定文件
+损坏（`Bad TOML`）并重置成默认值——**已保存的密码会随之丢失**。
+
+### 被控端（fast.6 起）
+
+| 开关 | 默认 | 平台 | 作用 |
+|---|---|---|---|
+| `fast-video-inflight` | `2` | 全部 | 对回确认的连接允许的在途帧数（1–4）。不回确认的连接固定为 1，即上游行为。3 秒等不到确认就丢帧 |
+| `fast-link-cap` | 开 | 全部 | 用相邻两帧确认的间隔估算链路容量（10 秒窗口取次大值，只会低估），**链路饱和时**把码率压到容量的 0.8 倍；不饱和时每 3 秒放开 25%，直到不再起作用 |
+| `fast-downscale` | 开 | macOS | 码率封顶低于约 2.5 / 0.9 Mbps（按 1080p 折算）时，ScreenCaptureKit 直接输出 2/3 或 1/2 尺寸（GPU 缩放）。发给客户端的显示几何不变，鼠标映射不受影响。每次切换至少间隔 20 秒，最低 360 行；**只在所有连接都回确认时启用** |
+| `fast-relay-mss` | 不设置（关） | macOS / Linux | 被控端→中转这条 TCP 连接的 MSS（536–1460）。大包丢得比小包多、而路径 MTU 又改不了时有用；只影响这一条连接 |
+
+“饱和”的判定需要两个条件同时成立：发送端在一个周期里超过一半时间在等在途帧，**并且**
+延迟中位数明显高于最低值。只满足其中一个时（静止画面、抖动的链路）不封顶，避免码率被无谓地一路压低。
+
+另外，fast.6 的 VideoToolbox 零拷贝编码器改码率时直接改会话属性，不再重建会话，
+所以 ABR 每次调整不会再额外产生一个关键帧。
+
+### 设置方法
+
+被控端的配置归系统服务所有，**不能直接改文件**，要通过正在运行的服务设置：
+
+```bash
+# macOS：一定要带 -H，否则 sudo 保留 HOME，会把用户自己的 FastRustDesk2.toml 改成 root 所有
+sudo -H /Applications/FastRustDesk.app/Contents/MacOS/FastRustDesk --option fast-relay-mss 1200
+sudo -H /Applications/FastRustDesk.app/Contents/MacOS/FastRustDesk --option fast-relay-mss      # 读取
+sudo -H /Applications/FastRustDesk.app/Contents/MacOS/FastRustDesk --option fast-relay-mss ''   # 清除，恢复默认
+```
+
+Windows 被控端用管理员权限运行 `FastRustDesk.exe --option <名称> <值>`。设置立即生效，
+对下一次会话（`fast-relay-mss` 是下一条中转连接）起作用。
+
+### 怎么看是否生效
+
+被控端日志（macOS：`~/Library/Logs/FastRustDesk/server/`）：
+
+- `link: capture scale 1 -> 0.5 (cap Some(306)kbps)` —— 降分辨率编码切换
+- `relay connection to <地址>:<端口> with mss 1200` —— MSS 已设置；内核拒绝时是一条 `TCP_MAXSEG ... refused` 警告，连接照常建立
+- `link: blocked=... saturated=...` —— 每 3 秒一次的链路评估（DEBUG 级别）
+
+### 实测与局限
+
+在一条 RTT 约 250 ms、丢包 15–30% 的中转链路上，三组配置交替各测 3 次：默认配置加
+`fast-relay-mss 1200` 三次的延迟中位数都在 1.0–1.2 s，而默认配置为 2.1–9.7 s。
+但在这种丢包率下，**所有配置都只有 0–2 fps**：时间几乎全花在 TCP 重传上，这些开关能
+缩短排队延迟，却不能让画面流畅起来。真正的出路是消除丢包，或者绕开 TCP 中转（UDP 直连）。
+
+测量时有两点要注意：
+
+1. **测的必须是视频真正走的路径。** 多网卡的主机（例如同时连着 VPN 和家宽）去服务器的流量
+   未必走你以为的那条线。先在被控端用 `route -n get <服务器地址>` 和 `netstat -an | grep <端口>`
+   确认，再在那条路径上 ping。
+2. **每一组都先确认真的有视频。** 会话没登录成功时，延迟采样照样会来，但 `speed` 为 0、
+   没有编码器；不先过滤，坏样本会被当成“这一组很差”。

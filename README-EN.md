@@ -173,6 +173,22 @@ point of running your own server.
 > To restore it, delete the two blocks marked `LOCAL FORK` in `src/common.rs`
 > and `src/updater.rs`. The `enable-check-update` option itself is untouched.
 
+### 9. Slow-link tuning (fast.5 / fast.6)
+
+For relayed links with high RTT and real packet loss:
+
+- **The client acknowledges every frame**, so the host stops queueing seconds of
+  video in TCP and relay buffers. This works against stock RustDesk hosts too.
+- **The host caps its bitrate to the measured link capacity**, and on macOS
+  **encodes at a lower resolution** when the cap is low (GPU scaling, the
+  zero-copy path is untouched).
+- The VideoToolbox encoder **changes bitrate without forcing a keyframe**.
+- An optional **MSS clamp on the relay connection**, for paths that lose large
+  packets more than small ones and whose MTU you cannot change.
+
+Everything has a default. Options and how to measure them are in
+[FastRustDesk.md, section 7](FastRustDesk.md#七慢链路调优开关fast5--fast6) (Chinese).
+
 ## What FastRDServer adds
 
 This client with the stock open-source server gives you "RustDesk that performs

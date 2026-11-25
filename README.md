@@ -140,6 +140,17 @@ Apple 已在 macOS 14 弃用 `CGDisplayStream`。新后端在 `libs/scrap/src/sc
 > 要恢复，删掉 `src/common.rs` 和 `src/updater.rs` 里标注 `LOCAL FORK` 的两段即
 > 可，`enable-check-update` 选项本身未改动。
 
+### 9. 慢链路调优（fast.5 / fast.6）
+
+面向高 RTT、有丢包的中转链路：
+
+- **客户端逐帧确认**，被控端不再把几秒的视频堆在缓冲里；对原版 RustDesk 被控端同样有效。
+- **被控端按链路容量封顶码率**，低码率时在 macOS 上**降分辨率编码**（GPU 缩放，零拷贝路径不变）。
+- VideoToolbox 编码器**调码率不再强制关键帧**。
+- 可选的**中转连接 MSS 钳制**，用于大包丢得多、路径 MTU 又改不了的链路。
+
+都有默认值，开关和测量方法见 [FastRustDesk.md 第七节](FastRustDesk.md#七慢链路调优开关fast5--fast6)。
+
 ## 搭配 FastRDServer 能得到什么
 
 单独用本客户端 + 官方开源服务端，你得到的是「性能更好的 RustDesk」。

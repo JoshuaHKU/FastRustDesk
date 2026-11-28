@@ -1,4 +1,4 @@
-//! FastRustDesk: `FastRustDesk --vdisplay ...` (design 6.4).
+//! FastRustDesk: `FastRustDesk --vdisplay ...` (FastRustDesk.md 8.2).
 //!
 //! Everything except `probe` is sent over IPC to the login user's `--server`,
 //! which owns the displays. Run it as the login user (an SSH login as that user

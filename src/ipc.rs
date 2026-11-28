@@ -780,6 +780,11 @@ impl Drop for CheckIfRestart {
     }
 }
 
+/// FastRustDesk: serve `vdisplay-status` / `vdisplay-cmd:<json>` from the
+/// `--server` process. Trust boundary: this IPC socket is only reachable by the
+/// logged-in user's own processes, the same audience that can already change any
+/// option through it, so no further authorisation is applied. Runs blocking work
+/// (display creation takes ~0.7 s) off the IPC task.
 #[cfg(target_os = "macos")]
 async fn vdisplay_ipc(name: &str) -> Option<String> {
     let name = name.to_owned();

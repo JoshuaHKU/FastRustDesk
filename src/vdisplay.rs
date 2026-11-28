@@ -1,6 +1,6 @@
 //! FastRustDesk: macOS virtual displays.
 //!
-//! Design: `FastRustDesk-DESIGN-mac-virtual-display-DETAIL.md` (section 4).
+//! Documentation: `FastRustDesk.md`, section 8 (architecture in 8.4).
 //! The native half is `src/platform/macos_vdisplay.m`.
 //!
 //! Model: every entry point (login, toolbar toggle, tray, CLI, settings page)
@@ -19,11 +19,21 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const VENDOR: u32 = 0x4652; // "FR"
+/// Vendor id stamped on every display we create ("FR"). It must be non-zero
+/// (otherwise `initWithDescriptor:` returns nil) and is how our displays are told
+/// apart from real panels: `CGDisplayVendorNumber` reports it immediately.
+pub const VENDOR: u32 = 0x4652;
+/// Product id = PRODUCT_BASE | slot. Together with the persisted serial this is
+/// the display's identity, under which macOS remembers arrangement and mode.
 const PRODUCT_BASE: u32 = 0x5600;
+/// Matches the controlling side's menu (`kMaxVirtualDisplayCount`).
 pub const MAX_SLOTS: u8 = 4;
+/// Largest pixel size we declare: 6K-class. Beyond it a 2x (HiDPI) mode falls back
+/// to 1x, which keeps capture and VideoToolbox encoding within reach.
 const PIXEL_CAP: (u32, u32) = (6144, 3840);
+/// Smallest looks-like size; a phone controller is scaled up to at least this.
 const LOGICAL_MIN: (u32, u32) = (1024, 640);
+/// Used when the controller does not report its display (older clients).
 const DEFAULT_LOGICAL: (u32, u32) = (1920, 1080);
 
 pub const IDD_IMPL: &str = "mac_cgvd";
@@ -36,6 +46,8 @@ pub const OPT_HIDPI: &str = "mac-vd-hidpi";
 
 // ------------------------------------------------------------------ FFI
 
+/// Mirror of `fr_disp` in macos_vdisplay.m: one online display as CoreGraphics
+/// reports it. `w`/`h` are the looks-like size, `px_w`/`px_h` the pixel size.
 #[repr(C)]
 #[derive(Default, Clone, Copy, Debug)]
 struct FrDisp {
@@ -267,7 +279,7 @@ fn modes_for(c: &SlotConfig) -> (Vec<u32>, u32, u32) {
 }
 
 /// A display that is a real panel, as opposed to the headless placeholder macOS
-/// spawns, a mirror, or one of ours (design 4.6).
+/// spawns, a mirror, or one of ours (FastRustDesk.md 8.5).
 fn is_real_panel(d: &FrDisp) -> bool {
     if d.vendor == VENDOR || d.vendor == 0 || d.vendor > 0xFFFF {
         return false;
@@ -473,7 +485,7 @@ impl Manager {
         }
     }
 
-    /// Whether removing `slot` leaves the machine with something to show (design 4.7).
+    /// Whether removing `slot` leaves the machine with something to show (FastRustDesk.md 8.5).
     fn can_remove(&self, slot: u8) -> bool {
         let Some(l) = self.live.get(&slot) else {
             return true;
@@ -555,7 +567,7 @@ impl Manager {
     }
 
     /// Change a live slot to `c`: switch mode if declared, else recreate it with
-    /// the same identity (design 4.5).
+    /// the same identity (FastRustDesk.md 8.5).
     fn reshape(&mut self, slot: u8, c: &SlotConfig) {
         // A display only offers the modes declared at creation, which are derived
         // from the target size, so a new size means recreating it with the same
@@ -852,7 +864,7 @@ pub fn set_resolution(display_id: u32, w: u32, h: u32) -> Option<Result<(), Stri
     })
 }
 
-/// Peer-info additions for the controlling side (design 7.1).
+/// Peer-info additions for the controlling side (FastRustDesk.md 8.6).
 pub fn platform_additions() -> serde_json::Map<String, serde_json::Value> {
     let mut map = serde_json::Map::new();
     let mut m = MANAGER.lock().unwrap();
@@ -883,7 +895,7 @@ pub fn platform_additions() -> serde_json::Map<String, serde_json::Value> {
     map
 }
 
-/// Status JSON (design 6.1). Never blocks: the tray calls this on the main thread.
+/// Status JSON (FastRustDesk.md 8.2). Never blocks: the tray calls this on the main thread.
 pub fn status_json_cached() -> String {
     STATUS_CACHE.lock().unwrap().clone()
 }
@@ -919,7 +931,7 @@ fn validate_size(w: u32, h: u32, hidpi: bool) -> Result<bool, String> {
     Ok(hidpi && w * 2 <= PIXEL_CAP.0 && h * 2 <= PIXEL_CAP.1)
 }
 
-/// Local management command (design 6.2). Returns a short result text.
+/// Local management command (FastRustDesk.md 8.2). Returns a short result text.
 pub fn command(json: &str) -> Result<String, String> {
     let c: Cmd = serde_json::from_str(json).map_err(|e| format!("bad command: {}", e))?;
     let mut m = MANAGER.lock().unwrap();

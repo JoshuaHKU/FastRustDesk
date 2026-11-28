@@ -1354,7 +1354,7 @@ List<Widget> getVirtualDisplayMenuChildren(
   return [];
 }
 
-// FastRustDesk: the "Virtual display" submenu for a macOS peer (design 7.3).
+// FastRustDesk: the "Virtual display" submenu for a macOS peer (FastRustDesk.md 8.2).
 // Slot N maps to the peer's configured virtual display N; persistent slots are
 // shown but cannot be switched off from here.
 List<Widget> _macVirtualDisplayMenuChildren(

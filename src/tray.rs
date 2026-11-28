@@ -330,7 +330,7 @@ fn load_icon_from_asset() -> Option<image::DynamicImage> {
     None
 }
 
-/// FastRustDesk: the tray's "Virtual displays" submenu on macOS (design section 9).
+/// FastRustDesk: the tray's "Virtual displays" submenu on macOS (FastRustDesk.md 8.2).
 /// Runs on the main thread inside the tao event loop: it only reads the cached
 /// status and hands commands to a worker thread, so it never waits behind a
 /// display being created.

@@ -347,3 +347,92 @@ Windows 被控端用管理员权限运行 `FastRustDesk.exe --option <名称> <�
    确认，再在那条路径上 ping。
 2. **每一组都先确认真的有视频。** 会话没登录成功时，延迟采样照样会来，但 `speed` 为 0、
    没有编码器；不先过滤，坏样本会被当成“这一组很差”。
+
+## 八、macOS 虚拟显示屏（1.5.0）
+
+没接显示器的 Mac mini / Mac Studio、合盖的 MacBook，macOS 只提供一块低分辨率的占位屏（vendor 为 `unkn`、model 为 `virt`），有时一块都没有。远程连上去画面很糊，或者一直“等待画面传输”。1.5.0 的被控端会在这种情况下创建一块虚拟显示屏，不需要 HDMI 假负载，也不需要第三方工具。
+
+要求：被控端 macOS 14 及以上、已安装（不是便携运行）。控制端升级到 1.5.0 才会上报屏幕尺寸、出现工具栏菜单；旧控制端连进来，自动建屏照样生效，只是用默认分辨率。
+
+### 8.1 默认行为
+
+| 场景 | 被控端怎么做 |
+|---|---|
+| 没接显示器，有远程会话连入 | 建一块**常驻**虚拟屏：“看起来像”的分辨率等于控制端主屏的逻辑分辨率，默认 HiDPI（像素 ×2）；会话从这块屏开始 |
+| 已有常驻屏 | 每次连接都**优先进入常驻屏**（即使同时接着物理屏） |
+| 控制端换了屏幕尺寸，且是唯一会话 | 常驻屏跟随新的尺寸（仅当对方上报了尺寸；旧客户端不报，就保持原样） |
+| 远程工具栏临时添加的屏 | 最后一个会话结束 30 秒后回收（可改为立即 / 5 分钟 / 不回收） |
+| 被控服务或系统重启 | 常驻屏自动重建，身份不变，macOS 记得它的排列 |
+| 带宽不足 | 沿用慢链路的降分辨率编码（第七节 `fast-downscale`），长宽比不变 |
+
+像素上限 6144×3840：控制端是 4K、缩放 100% 时，2 倍会超限，自动退回 1 倍（3840×2160）。最多 4 个槽位。**不会拔掉最后一块显示屏**：笔记本失去最后一块屏会立即合盖睡眠，台式机在没有会话时才允许。
+
+### 8.2 管理入口
+
+1. **远程工具栏**（控制端）：`显示器 › 虚拟显示器`。4 个槽位各一个勾选项，后面写着分辨率；常驻屏标“（常驻）”，不能在这里关。“全部拔出”只拔会话屏。切到虚拟屏后，`分辨率` 菜单可以选预设或自定义，被控端会用同一身份重建这块屏；手动改过的常驻屏不再跟随控制端。
+2. **被控端设置页**：`设置 › 显示 › 本机虚拟显示屏`。三个开关（无显示器时自动创建 / 允许远程增删 / 新建默认 HiDPI）、回收时间、槽位列表（开关、编辑、删除）。编辑项：名称、分辨率（预设或自定义）、HiDPI、30/60 Hz、常驻、跟随控制端。
+3. **菜单栏托盘**：`虚拟显示屏 ▸`，快速开关、全部关闭、管理…（跳到设置页）。托盘打开的屏保留到服务退出。
+4. **命令行**，适合 SSH 管理无显示器的机器。用登录用户身份运行，**不要加 sudo**（sudo 保留 HOME，会把用户配置文件改成 root 所有）：
+
+```bash
+B=/Applications/FastRustDesk.app/Contents/MacOS/FastRustDesk
+$B --vdisplay status [--json]
+$B --vdisplay on 2            # off 2 | off all
+$B --vdisplay add --res 2560x1440 --hidpi on --persistent --name Studio
+$B --vdisplay set 1 --res 1920x1080 --persistent off
+$B --vdisplay rm 3
+$B --vdisplay opt keep 300    # headless | allow-remote | hidpi | keep
+$B --vdisplay probe           # 只检查系统是否支持，退出码 = 失败项数
+```
+
+### 8.3 配置项（`FastRustDesk2.toml` 的 `[options]`）
+
+| 键 | 默认 | 含义 |
+|---|---|---|
+| `mac-vd-headless` | `Y` | 无显示器时自动建常驻屏 |
+| `mac-vd-allow-remote` | `Y` | 允许控制端增删（还需要该会话有键鼠控制权限） |
+| `mac-vd-hidpi` | `Y` | 新建屏默认 HiDPI |
+| `mac-vd-keep` | `30` | 会话屏回收秒数，`0` 立即，`-1` 不回收 |
+| `mac-virtual-displays` | `[]` | 槽位配置 JSON（`slot`、`name`、`w`、`h`、`hidpi`、`refresh`、`persistent`、`follow`、`serial`），建议用界面或命令行改 |
+
+### 8.4 架构
+
+```text
+控制端                                       被控端 --server 进程（launchd agent）
+ LoginRequest.fast_client_display ───────▶ connection.rs ─ on_login() ─┐
+ Misc.ToggleVirtualDisplay ──────────────▶ toggle()                     │
+ Misc.ChangeDisplayResolution ───────────▶ set_resolution()             ├─▶ vdisplay.rs
+ 设置页 / --vdisplay ─ IPC "vdisplay-*" ─▶ status_json() / command()     │    期望状态 → reconcile()
+ 托盘子菜单（同一进程，主线程）────────────▶ status_json_cached()         ┘          │ FFI
+                                                                          macos_vdisplay.m
+                                                                          （CGVirtualDisplay）
+```
+
+- **期望状态 + reconcile**：所有入口只改某个槽位的“需求来源”——常驻（来自配置）、会话（工具栏，按连接记）、本地（托盘 / 命令行）。唯一会创建或销毁显示屏的地方是 `reconcile()`，三种来源叠加不会重复建、也不会误拔。
+- 能力通过 `PeerInfo.platform_additions` 上报：`idd_impl = "mac_cgvd"`、`rustdesk_virtual_displays`（存活槽位，复用上游键名）、`mac_vd_slots`（标签）、`mac_vd_allow_remote`。显示器变化时随 `displays_to_msg` 重发，工具栏状态保持同步。
+- 虚拟屏的分辨率标成“虚拟显示器分辨率”（0×0 的 original resolution），控制端因此提供自定义分辨率输入。
+
+### 8.5 实现要点（实测得来，macOS 26.5 / 26.6，Apple Silicon）
+
+私有类全部运行时查找（`NSClassFromString` + `respondsToSelector:`），缺失时 `probe` 失败、功能隐藏，不会在加载或首次调用时崩溃。调用顺序参考了 MIT 许可的 BetterDummy（© 2021 Istvan T.）和 Crisp（© 2026 Didrik Galteland），代码是重写的。下面几条与这两个项目的文档说法不同，都在真机上测过（探测工具 `tools/vd-probe/vd-probe.m`）：
+
+1. **物理尺寸决定 macOS 把它当显示器还是电视。** 按 110 PPI 报尺寸时，3840 宽的屏约 40 英寸，系统会弹出控制中心的“屏幕镜像”选择框，没人点的话约 6 秒后以**镜像**上线，而且随尺寸时好时坏。固定报 27 英寸对角线后，10–26 ms 内以扩展屏上线，从未弹框。
+2. **创建它的进程必须在主线程处理 NSEvent。** 只跑 runloop 时，本进程永远读不到新屏的模式（`CGDisplayCopyDisplayMode` 为空），也收不到重配置回调，而别的进程看它一切正常。`--server` 主线程的托盘事件循环满足这一点；托盘启动失败时的兜底是 `[NSApp run]`，不是 `CFRunLoopRun()`。
+3. **非主线程创建可行**；为防其他系统版本不同，返回 nil 时再到主线程重试一次。
+4. `setHiDPI:` 的参数是 32 位无符号整数，不是 BOOL。
+5. **创建后要校验并切到目标模式**：同样的声明，Mac mini 上一建好就是 HiDPI，MacBook 上却是 1 倍。切换后等 0.3 秒确认不再变化（Intel 机器上 WindowServer 会在注册中途换掉已生效的模式）。
+6. **身份要稳定**：product = `0x5600 | 槽位`，serial 首次随机后持久化。macOS 按 vendor/product/serial 记住排列和模式；Apple Silicon 上 CG UUID 是随机的，不能拿来识别。
+7. **无显示器判定**只看在线、非镜像、vendor 不是 0 / 占位值 / 我们自己的屏；**不看 `CGDisplayIsActive`**：屏幕睡眠时内建屏读作 inactive，开着盖的闲置 MacBook 曾因此被误判。合盖时内建屏会直接从在线列表消失。
+8. 进程退出或崩溃后，WindowServer 在 0.2 秒内回收它创建的屏，不会留下孤儿屏。销毁是异步的，用同一身份重建前先等旧屏下线（≤1.5 秒）。
+9. 每块屏只声明目标像素尺寸（HiDPI 时再加一个 1 倍尺寸）×1–2 个刷新率，远低于 `applySettings:` 约 400 个模式对象的上限。改尺寸就用同一身份重建。
+
+### 8.6 协议扩展
+
+`message.proto`：`LoginRequest` 增加 `ClientDisplayInfo fast_client_display = 1001`（`width`、`height` 为逻辑点，`scale` 为缩放比）。控制端只在远程控制会话里填写：macOS 取主屏像素 ÷ 缩放；Windows 取主显示器（按每显示器 DPI 感知的物理像素）÷（有效 DPI / 96）；Linux 取主屏尺寸；移动端暂不发送。字段号远离上游编号，旧版本忽略它。ID / 中继服务器只转发加密流、不解析 `LoginRequest`，**不需要升级**。
+
+### 8.7 排错与已知限制
+
+- 日志：`~/Library/Logs/FastRustDesk/server/FastRustDesk_rCURRENT.log`，搜 `vdisplay:`。启动时有 `probe N failure(s)`，0 表示系统支持；创建时会打印槽位、尺寸、耗时、模式是否到位。
+- `supported: no`：系统低于 macOS 14，或者 Apple 改了私有 API。功能自动隐藏，其他远程功能不受影响。
+- 完全关闭：`opt headless off`，再把各槽位 `set N --persistent off` 并 `rm N`。
+- 依赖私有 API，系统更新可能让它失效；刷新率仅 30/60 Hz，不支持 HDR；登录窗口（开机未登录）、合盖保持唤醒、睡眠唤醒尚未充分验证。Mac 版隐私模式（物理屏黑屏、只让远程看到虚拟屏）未实现。

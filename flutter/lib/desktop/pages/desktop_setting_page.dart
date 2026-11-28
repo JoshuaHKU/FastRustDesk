@@ -3227,7 +3227,7 @@ void changeSocks5Proxy() async {
 //#endregion
 
 // ---------------------------------------------------------------------------
-// FastRustDesk: "This Mac's virtual displays" (design section 8).
+// FastRustDesk: "This Mac's virtual displays" (FastRustDesk.md 8.2).
 // Talks to the --server process through main_get_common("vdisplay-status") and
 // main_get_common("vdisplay-cmd:<json>"), so no new bridge functions are needed.
 

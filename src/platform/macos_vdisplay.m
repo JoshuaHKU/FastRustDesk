@@ -1,6 +1,6 @@
 // FastRustDesk: macOS virtual displays (CGVirtualDisplay, private CoreGraphics API).
 //
-// Design: FastRustDesk-DESIGN-mac-virtual-display-DETAIL.md, section 5.
+// Documentation: FastRustDesk.md, section 8 (implementation notes in 8.5).
 // Everything private is looked up at run time (NSClassFromString/respondsToSelector),
 // so a macOS that drops these classes makes fr_vd_probe() fail instead of
 // crashing at load or at first call.

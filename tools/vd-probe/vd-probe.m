@@ -2,8 +2,16 @@
 //
 // Exercises the private CGVirtualDisplay API exactly the way the product code
 // will (runtime lookup only, no @interface declarations), and reports what the
-// running macOS actually does. See FastRustDesk-DESIGN-mac-virtual-display-DETAIL.md
-// section 11.1.
+// running macOS actually does. See FastRustDesk.md section 8.5 for what it
+// found and why the product code is written the way it is.
+//
+// Environment switches used while investigating (all optional):
+//   VD_APP=1      [NSApp finishLaunching] first, like a real app
+//   VD_PUMP=1     drain NSEvents while waiting (required to see the new modes)
+//   VD_DIAG=<in>  report this diagonal instead of 110 PPI (27 avoids the TV picker)
+//   VD_QUEUE=main|global, VD_CB=1, VD_POLL=<n>, VD_SERIAL=<n>
+// Run over SSH with `sudo launchctl asuser <uid> env ... vd-probe ...` so it
+// reaches the logged-in user's WindowServer session.
 //
 // Build: clang -fobjc-arc -framework Foundation -framework CoreGraphics \
 //          -framework AppKit tools/vd-probe/vd-probe.m -o vd-probe

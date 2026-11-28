@@ -417,7 +417,7 @@ pub fn core_main() -> Option<Vec<String>> {
             #[cfg(target_os = "macos")]
             {
                 let handler = std::thread::spawn(move || crate::start_server(true, false));
-                // FastRustDesk: virtual displays live in this process (design 5.3).
+                // FastRustDesk: virtual displays live in this process (FastRustDesk.md 8.5).
                 crate::vdisplay::init();
                 crate::tray::start_tray();
                 // The tray normally never returns. If it failed (e.g. no menu bar in a

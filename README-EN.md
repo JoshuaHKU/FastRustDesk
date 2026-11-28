@@ -189,6 +189,27 @@ For relayed links with high RTT and real packet loss:
 Everything has a default. Options and how to measure them are in
 [FastRustDesk.md, section 7](FastRustDesk.md#七慢链路调优开关fast5--fast6) (Chinese).
 
+### 10. macOS virtual displays (1.5.0)
+
+A headless Mac mini / Mac Studio, or a closed MacBook, normally shows a remote
+session nothing but macOS's low-resolution placeholder, or no picture at all.
+The 1.5.0 host **creates a virtual display** instead, with no HDMI dummy plug
+and no third-party tool:
+
+- sized to the **controlling side's screen** (logical size, HiDPI by default)
+  and kept as a **persistent** display that later sessions start on;
+- the remote toolbar can add up to 4 displays and resize them; displays added
+  that way are removed 30 s after the last session ends;
+- on the Mac itself they are managed from the settings page, the menu bar tray
+  or the `--vdisplay` command line, which suits SSH upkeep of headless machines;
+- built on macOS 14+'s private `CGVirtualDisplay` API; if it is missing the
+  feature hides itself.
+
+Usage, options and implementation notes (several measured behaviours differ
+from what other projects document) are in
+[FastRustDesk.md, section 8](FastRustDesk.md#八macos-虚拟显示屏150) (Chinese).
+The controlling side needs 1.5.0 too to report its screen size and show the menu.
+
 ## What FastRDServer adds
 
 This client with the stock open-source server gives you "RustDesk that performs

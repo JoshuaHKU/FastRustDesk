@@ -7,7 +7,7 @@ It is NOT affiliated with, endorsed by, or supported by RustDesk or Purslane Ltd
 only to describe the software this work derives from.
 
 Upstream:  https://github.com/rustdesk/rustdesk
-Baseline:  v1.4.9 (commit 11190fa)
+Baseline:  v1.4.9 (commit 11190fa); this fork's own version: 1.5.0
 License:   GNU Affero General Public License v3.0 (unchanged from upstream)
 
 Modifications made in this fork (summary; see README.md for detail):

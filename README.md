@@ -151,6 +151,20 @@ Apple 已在 macOS 14 弃用 `CGDisplayStream`。新后端在 `libs/scrap/src/sc
 
 都有默认值，开关和测量方法见 [FastRustDesk.md 第七节](FastRustDesk.md#七慢链路调优开关fast5--fast6)。
 
+### 10. macOS 虚拟显示屏（1.5.0）
+
+没接显示器的 Mac mini / Mac Studio、合盖的 MacBook，被远程连接时只能看到一块低分辨率的
+占位屏，甚至一直“等待画面传输”。1.5.0 的被控端会**自动创建一块虚拟显示屏**，不需要
+HDMI 假负载，也不需要第三方工具：
+
+- 分辨率**跟随控制端屏幕**（逻辑分辨率，默认 HiDPI），设为**常驻**，之后每次连接优先进入它；
+- 远程工具栏可以再加最多 4 块、改分辨率，会话结束 30 秒后自动回收临时加的屏；
+- 被控端本机可在设置页、菜单栏托盘或命令行 `--vdisplay` 管理，适合 SSH 维护无显示器的机器；
+- 依赖 macOS 14+ 的私有 API `CGVirtualDisplay`，不可用时功能自动隐藏。
+
+用法、配置项和实现细节见 [FastRustDesk.md 第八节](FastRustDesk.md#八macos-虚拟显示屏150)。
+控制端也升级到 1.5.0 才会上报屏幕尺寸、出现工具栏菜单。
+
 ## 搭配 FastRDServer 能得到什么
 
 单独用本客户端 + 官方开源服务端，你得到的是「性能更好的 RustDesk」。
@@ -226,7 +240,7 @@ python build.py --portable --flutter --hwcodec
 
 | 文件 | 内容 |
 |---|---|
-| [FastRustDesk.md](FastRustDesk.md) | 构建与部署：改动的技术说明、完整构建步骤、部署注意事项 |
+| [FastRustDesk.md](FastRustDesk.md) | 构建与部署：改动的技术说明、完整构建步骤、部署注意事项；第七节慢链路调优，第八节 macOS 虚拟显示屏 |
 | [FastRustDesk-SELFHOST.md](FastRustDesk-SELFHOST.md) | 自建服务器的部署与运维 |
 | [INSTALL-FastRustDesk-macos.md](INSTALL-FastRustDesk-macos.md) | macOS 客户端安装配置 |
 | [INSTALL-FastRustDesk-windows.md](INSTALL-FastRustDesk-windows.md) | Windows 客户端安装配置 |

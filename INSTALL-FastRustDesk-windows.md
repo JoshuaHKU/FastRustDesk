@@ -129,7 +129,7 @@ Start-Service FastRustDesk
 
 # 安装程序（预置服务器配置）
 
-`FastRustDesk-1.4.9-host=rd.example.com,key=...,.exe` — 22.5 MB 单文件，
+`FastRustDesk-1.5.0-host=rd.example.com,key=...,.exe` — 22.7 MB 单文件，
 双击即装，**安装后自动指向自建服务器，不需要手工填 ID 服务器和 Key**。
 
 ## 原理：配置编码在文件名里
@@ -138,7 +138,7 @@ Start-Service FastRustDesk
 不是外挂的补丁。程序启动时解析自己的文件名：
 
 ```
-FastRustDesk-1.4.9-host=rd.example.com,key=<YOUR_SERVER_PUBLIC_KEY>,.exe
+FastRustDesk-1.5.0-host=rd.example.com,key=<YOUR_SERVER_PUBLIC_KEY>,.exe
                     └──────┬──────┘     └───────────────────┬────────────────────┘  │
                         ID 服务器                          公钥                  结尾分隔符
 ```
@@ -193,10 +193,10 @@ FastRDServer 生成密钥对时会刻意重试，直到公钥里不含 `/` 和 `
 
 ```powershell
 # 图形安装
-.\"FastRustDesk-1.4.9-host=rd.example.com,key=...,.exe"
+.\"FastRustDesk-1.5.0-host=rd.example.com,key=...,.exe"
 
 # 静默安装（装到 C:\Program Files\FastRustDesk）
-.\"FastRustDesk-1.4.9-host=rd.example.com,key=...,.exe" --silent-install
+.\"FastRustDesk-1.5.0-host=rd.example.com,key=...,.exe" --silent-install
 ```
 
 装完检查配置是否带上了：
@@ -214,7 +214,7 @@ Select-String -Path "$env:APPDATA\FastRustDesk\config\FastRustDesk2.toml" -Patte
 
 **改文件名即可，不用重新编译。** 把 `host=` 和 `key=` 换成新服务器的地址和公钥。
 
-同目录下另有一份 `FastRustDesk-1.4.9-install.exe`（不带配置），
+同目录下另有一份 `FastRustDesk-1.5.0-install.exe`（不带配置），
 适合手工填服务器的场合。
 
 ## 自己重新打包
@@ -225,7 +225,7 @@ $env:VCPKG_ROOT="D:\Apply\vcpkg"; $env:PATH="D:\Apply\flutter\bin;"+$env:PATH
 python build.py --flutter --hwcodec --portable
 ```
 
-产物 `FastRustDesk-1.4.9-install.exe` 在仓库根目录，改名即可。
+产物 `FastRustDesk-1.5.0-install.exe` 在仓库根目录，改名即可。
 
 > 打包器是仓库自带的 `libs/portable/generate.py`（需要 `brotli`），
 > 不需要 Inno Setup / NSIS。

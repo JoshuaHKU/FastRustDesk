@@ -417,11 +417,35 @@ pub fn core_main() -> Option<Vec<String>> {
             #[cfg(target_os = "macos")]
             {
                 let handler = std::thread::spawn(move || crate::start_server(true, false));
+                // FastRustDesk: virtual displays live in this process (design 5.3).
+                crate::vdisplay::init();
                 crate::tray::start_tray();
+                // The tray normally never returns. If it failed (e.g. no menu bar in a
+                // LoginWindow session), keep the main thread pumping NSEvents anyway:
+                // display notifications only arrive that way, and the virtual displays
+                // depend on them. This also keeps the server alive, as the join did.
+                if !handler.is_finished() {
+                    log::warn!(
+                        "tray exited; running the NSApp event loop for display notifications"
+                    );
+                    std::thread::spawn(move || {
+                        hbb_common::allow_err!(handler.join());
+                        std::process::exit(0);
+                    });
+                    crate::vdisplay::run_nsapp_forever();
+                }
                 // prevent server exit when encountering errors from tray
                 hbb_common::allow_err!(handler.join());
             }
             return None;
+        } else if args[0] == "--vdisplay" {
+            #[cfg(target_os = "macos")]
+            std::process::exit(crate::vdisplay_cli::run(&args[1..]));
+            #[cfg(not(target_os = "macos"))]
+            {
+                println!("--vdisplay is only available on macOS");
+                return None;
+            }
         } else if args[0] == "--import-config" {
             if args.len() == 2 {
                 let filepath;

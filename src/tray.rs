@@ -96,6 +96,9 @@ fn make_tray() -> hbb_common::ResultType<()> {
         }
     };
     let mut _tray_icon: Arc<Mutex<Option<TrayIcon>>> = Default::default();
+    // FastRustDesk: "Virtual displays" submenu (macOS virtual displays).
+    #[cfg(target_os = "macos")]
+    let mut vd_tray = vd_tray::VdTray::new();
 
     let menu_channel = MenuEvent::receiver();
     let tray_channel = TrayEvent::receiver();
@@ -185,7 +188,19 @@ fn make_tray() -> hbb_common::ResultType<()> {
             }
         }
 
+        #[cfg(target_os = "macos")]
+        vd_tray.tick(&tray_menu);
+
         if let Ok(event) = menu_channel.try_recv() {
+            #[cfg(target_os = "macos")]
+            match vd_tray.handle(&event.id) {
+                vd_tray::Handled::No => {}
+                vd_tray::Handled::Yes => return,
+                vd_tray::Handled::Manage => {
+                    open_func();
+                    return;
+                }
+            }
             if let Some(quit_i) = &quit_i {
                 if event.id == quit_i.id() {
                     /* failed in windows, seems no permission to check system process
@@ -313,4 +328,136 @@ fn load_icon_from_asset() -> Option<image::DynamicImage> {
         }
     }
     None
+}
+
+/// FastRustDesk: the tray's "Virtual displays" submenu on macOS (design section 9).
+/// Runs on the main thread inside the tao event loop: it only reads the cached
+/// status and hands commands to a worker thread, so it never waits behind a
+/// display being created.
+#[cfg(target_os = "macos")]
+mod vd_tray {
+    use super::translate;
+    use std::collections::HashMap;
+    use tray_icon::menu::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+
+    pub enum Handled {
+        No,
+        Yes,
+        Manage,
+    }
+
+    enum Action {
+        Cmd(String),
+        Manage,
+    }
+
+    pub struct VdTray {
+        submenu: Submenu,
+        inserted: bool,
+        sig: String,
+        ticks: u32,
+        actions: HashMap<MenuId, Action>,
+    }
+
+    impl VdTray {
+        pub fn new() -> Self {
+            Self {
+                submenu: Submenu::new(translate("Virtual displays".to_owned()), true),
+                inserted: false,
+                sig: String::new(),
+                ticks: 0,
+                actions: HashMap::new(),
+            }
+        }
+
+        /// Called every loop turn (~100 ms); refreshes about every 2 s.
+        pub fn tick(&mut self, menu: &Menu) {
+            self.ticks += 1;
+            if self.ticks % 20 != 1 {
+                return;
+            }
+            let status = crate::vdisplay::status_json_cached();
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&status) else {
+                return;
+            };
+            if v["supported"].as_bool() != Some(true) {
+                return;
+            }
+            let slots = v["slots"].as_array().cloned().unwrap_or_default();
+            let sig = serde_json::to_string(&slots).unwrap_or_default();
+            if self.inserted && sig == self.sig {
+                return;
+            }
+            self.sig = sig;
+            self.rebuild(&slots);
+            if !self.inserted {
+                // after "Open"
+                if menu.insert(&self.submenu, 1).is_ok() {
+                    self.inserted = true;
+                }
+            }
+        }
+
+        fn rebuild(&mut self, slots: &[serde_json::Value]) {
+            for item in self.submenu.items() {
+                if let Some(i) = item.as_check_menuitem() {
+                    let _ = self.submenu.remove(i);
+                } else if let Some(i) = item.as_menuitem() {
+                    let _ = self.submenu.remove(i);
+                } else if let Some(i) = item.as_predefined_menuitem() {
+                    let _ = self.submenu.remove(i);
+                }
+            }
+            self.actions.clear();
+            for s in slots {
+                let slot = s["slot"].as_u64().unwrap_or(0);
+                let persistent = s["persistent"].as_bool() == Some(true);
+                let active = s["active"].as_bool() == Some(true);
+                let mut text = format!(
+                    "{}   {}",
+                    s["name"].as_str().unwrap_or(""),
+                    s["label"].as_str().unwrap_or("")
+                );
+                if persistent {
+                    text.push_str(&format!(" ({})", translate("Persistent".to_owned())));
+                }
+                // A persistent display is turned off from the settings page, not here.
+                let item = CheckMenuItem::new(text, !persistent, active, None);
+                let cmd = serde_json::json!({"cmd": if active {"off"} else {"on"}, "slot": slot});
+                self.actions
+                    .insert(item.id().clone(), Action::Cmd(cmd.to_string()));
+                let _ = self.submenu.append(&item);
+            }
+            if !slots.is_empty() {
+                let _ = self.submenu.append(&PredefinedMenuItem::separator());
+                let off = MenuItem::new(translate("Turn all off".to_owned()), true, None);
+                self.actions.insert(
+                    off.id().clone(),
+                    Action::Cmd(r#"{"cmd":"off","slot":"all"}"#.to_owned()),
+                );
+                let _ = self.submenu.append(&off);
+            }
+            let manage = MenuItem::new(translate("Manage...".to_owned()), true, None);
+            self.actions.insert(manage.id().clone(), Action::Manage);
+            let _ = self.submenu.append(&manage);
+        }
+
+        pub fn handle(&mut self, id: &MenuId) -> Handled {
+            match self.actions.get(id) {
+                None => Handled::No,
+                Some(Action::Manage) => Handled::Manage,
+                Some(Action::Cmd(c)) => {
+                    let c = c.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = crate::vdisplay::command(&c) {
+                            hbb_common::log::warn!("vdisplay: tray command {} failed: {}", c, e);
+                        }
+                    });
+                    self.sig.clear(); // force a refresh on the next tick
+                    self.ticks = 0;
+                    Handled::Yes
+                }
+            }
+        }
+    }
 }

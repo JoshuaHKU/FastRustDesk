@@ -1244,6 +1244,11 @@ List<TToggleMenu> toolbarKeyboardToggles(FFI ffi) {
 }
 
 bool showVirtualDisplayMenu(FFI ffi) {
+  // FastRustDesk: macOS peers with CGVirtualDisplay support.
+  if (ffi.ffiModel.pi.platform == kPeerPlatformMacOS) {
+    return ffi.ffiModel.pi.isMacVirtualDisplay &&
+        ffi.ffiModel.pi.macVdAllowRemote;
+  }
   if (ffi.ffiModel.pi.platform != kPeerPlatformWindows) {
     return false;
   }
@@ -1263,6 +1268,9 @@ List<Widget> getVirtualDisplayMenuChildren(
   }
   final pi = ffi.ffiModel.pi;
   final privacyModeState = PrivacyModeState.find(id);
+  if (pi.isMacVirtualDisplay) {
+    return _macVirtualDisplayMenuChildren(ffi, privacyModeState, clickCallBack);
+  }
   if (pi.isRustDeskIdd) {
     final virtualDisplays = ffi.ffiModel.pi.RustDeskVirtualDisplays;
     final children = <Widget>[];
@@ -1344,4 +1352,54 @@ List<Widget> getVirtualDisplayMenuChildren(
     return children;
   }
   return [];
+}
+
+// FastRustDesk: the "Virtual display" submenu for a macOS peer (design 7.3).
+// Slot N maps to the peer's configured virtual display N; persistent slots are
+// shown but cannot be switched off from here.
+List<Widget> _macVirtualDisplayMenuChildren(
+    FFI ffi, RxString privacyModeState, VoidCallback? clickCallBack) {
+  final pi = ffi.ffiModel.pi;
+  final slots = pi.macVdSlots;
+  final active = pi.RustDeskVirtualDisplays;
+  final children = <Widget>[];
+  for (var i = 1; i <= kMaxVirtualDisplayCount; i++) {
+    final slot = slots.firstWhere((e) => e['slot'] == i,
+        orElse: () => <String, dynamic>{});
+    final persistent = slot['persistent'] == true;
+    final label = (slot['label'] ?? '') as String;
+    final on = active.contains(i);
+    var text = '${translate('Virtual display')} $i';
+    if (label.isNotEmpty) text += '   $label';
+    if (persistent) text += ' (${translate('Persistent')})';
+    children.add(Obx(() => CkbMenuButton(
+          value: on,
+          onChanged: privacyModeState.isNotEmpty || (persistent && on)
+              ? null
+              : (bool? value) async {
+                  if (value != null) {
+                    bind.sessionToggleVirtualDisplay(
+                        sessionId: ffi.sessionId, index: i, on: value);
+                    clickCallBack?.call();
+                  }
+                },
+          child: Text(text),
+          ffi: ffi,
+        )));
+  }
+  children.add(Divider());
+  children.add(Obx(() => MenuButton(
+        onPressed: privacyModeState.isNotEmpty
+            ? null
+            : () {
+                bind.sessionToggleVirtualDisplay(
+                    sessionId: ffi.sessionId,
+                    index: kAllVirtualDisplay,
+                    on: false);
+                clickCallBack?.call();
+              },
+        ffi: ffi,
+        child: Text(translate('Plug out all')),
+      )));
+  return children;
 }

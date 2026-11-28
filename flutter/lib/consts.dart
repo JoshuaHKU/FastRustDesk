@@ -26,6 +26,10 @@ const String kPlatformAdditionsRustDeskVirtualDisplays =
 const String kPlatformAdditionsAmyuniVirtualDisplays =
     "amyuni_virtual_displays";
 const String kPlatformAdditionsHasFileClipboard = "has_file_clipboard";
+// FastRustDesk: macOS virtual displays.
+const String kIddImplMacCgvd = "mac_cgvd";
+const String kPlatformAdditionsMacVdSlots = "mac_vd_slots";
+const String kPlatformAdditionsMacVdAllowRemote = "mac_vd_allow_remote";
 const String kPlatformAdditionsSupportedPrivacyModeImpl =
     "supported_privacy_mode_impl";
 

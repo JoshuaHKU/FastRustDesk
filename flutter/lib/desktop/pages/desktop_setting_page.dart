@@ -1843,6 +1843,8 @@ class _DisplayState extends State<_Display> {
       if (isDesktop) trackpadSpeed(context),
       if (!isWeb) privacyModeImpl(context),
       other(context),
+      // FastRustDesk: this Mac's own virtual displays.
+      if (isMacOS) const _MacVirtualDisplays(),
     ]).marginOnly(bottom: _kListViewBottomMargin);
   }
 
@@ -3223,3 +3225,357 @@ void changeSocks5Proxy() async {
 }
 
 //#endregion
+
+// ---------------------------------------------------------------------------
+// FastRustDesk: "This Mac's virtual displays" (design section 8).
+// Talks to the --server process through main_get_common("vdisplay-status") and
+// main_get_common("vdisplay-cmd:<json>"), so no new bridge functions are needed.
+
+class _MacVirtualDisplays extends StatefulWidget {
+  const _MacVirtualDisplays({Key? key}) : super(key: key);
+
+  @override
+  State<_MacVirtualDisplays> createState() => _MacVirtualDisplaysState();
+}
+
+class _MacVirtualDisplaysState extends State<_MacVirtualDisplays> {
+  Map<String, dynamic>? _status;
+  String _error = '';
+  bool _busy = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 2), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    if (_busy) return;
+    final s = await bind.mainGetCommon(key: 'vdisplay-status');
+    if (!mounted) return;
+    if (s.startsWith('ERR:') || s.isEmpty) {
+      setState(() => _status = null);
+      return;
+    }
+    try {
+      setState(() => _status = json.decode(s) as Map<String, dynamic>);
+    } catch (_) {}
+  }
+
+  Future<void> _cmd(Map<String, dynamic> c) async {
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    final r = await bind.mainGetCommon(key: 'vdisplay-cmd:${json.encode(c)}');
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      if (r.startsWith('ERR:')) _error = translate(r.substring(4));
+    });
+    await _refresh();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final st = _status;
+    if (st == null) return Offstage();
+    if (st['supported'] != true) {
+      return _Card(title: 'mac_vd_title', children: [
+        Text('${translate('mac_vd_unsupported')}: ${st['reason'] ?? ''}',
+                style: const TextStyle(color: Colors.grey))
+            .marginOnly(left: _kContentHMargin),
+      ]);
+    }
+    final opts = (st['options'] ?? {}) as Map;
+    final slots = List<Map<String, dynamic>>.from(
+        (st['slots'] ?? []).map((e) => Map<String, dynamic>.from(e)));
+    final maxSlots = (st['max_slots'] ?? 4) as int;
+
+    Widget check(String label, String key, bool value) => Row(children: [
+          Checkbox(
+              value: value,
+              onChanged: _busy
+                  ? null
+                  : (v) => _cmd({
+                        'cmd': 'opt',
+                        'key': key,
+                        'value': (v ?? false) ? 'on' : 'off'
+                      })),
+          Expanded(child: Text(translate(label))),
+        ]).marginOnly(left: _kCheckBoxLeftMargin);
+
+    final keep = (opts['keep'] ?? 30) as int;
+    final keepItems = <int, String>{
+      0: translate('mac_vd_keep_now'),
+      30: translate('mac_vd_keep_30s'),
+      300: translate('mac_vd_keep_5m'),
+      -1: translate('mac_vd_keep_never'),
+    };
+    if (!keepItems.containsKey(keep)) keepItems[keep] = '$keep s';
+
+    return _Card(title: 'mac_vd_title', children: [
+      check('mac_vd_opt_headless', 'headless', opts['headless'] == true),
+      check('mac_vd_opt_allow_remote', 'allow-remote',
+          opts['allow_remote'] == true),
+      check('mac_vd_opt_hidpi', 'hidpi', opts['hidpi'] == true),
+      Row(children: [
+        Text(translate('mac_vd_opt_keep')),
+        const SizedBox(width: 12),
+        DropdownButton<int>(
+          value: keep,
+          items: keepItems.entries
+              .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+              .toList(),
+          onChanged: _busy
+              ? null
+              : (v) => _cmd({'cmd': 'opt', 'key': 'keep', 'value': '$v'}),
+        ),
+      ]).marginOnly(left: _kContentHMargin),
+      const Divider(),
+      if (slots.isEmpty)
+        Text(translate('mac_vd_none'), style: const TextStyle(color: Colors.grey))
+            .marginOnly(left: _kContentHMargin),
+      ...slots.map((s) => _slotRow(context, s)),
+      Row(children: [
+        ElevatedButton.icon(
+          icon: const Icon(Icons.add, size: 16),
+          label: Text(translate('mac_vd_new')),
+          onPressed: _busy || slots.length >= maxSlots
+              ? null
+              : () => _edit(context, null),
+        ),
+        const SizedBox(width: 12),
+        if (_busy)
+          const SizedBox(
+              width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+        Expanded(
+            child: Text(_error,
+                style: const TextStyle(color: Colors.red),
+                overflow: TextOverflow.ellipsis)),
+      ]).marginOnly(left: _kContentHMargin, top: 6),
+    ]);
+  }
+
+  Widget _slotRow(BuildContext context, Map<String, dynamic> s) {
+    final active = s['active'] == true;
+    final persistent = s['persistent'] == true;
+    final slot = s['slot'];
+    var sub = '${s['label'] ?? ''}';
+    if (persistent) sub += ' · ${translate('Persistent')}';
+    if (s['follow'] == true) sub += ' · ${translate('mac_vd_follow_short')}';
+    return Row(children: [
+      Icon(Icons.circle,
+              size: 10, color: active ? Colors.green : Colors.grey.shade400)
+          .marginOnly(right: 8),
+      Expanded(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('$slot. ${s['name'] ?? ''}', overflow: TextOverflow.ellipsis),
+          Text(sub, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        ]),
+      ),
+      Tooltip(
+        message: persistent && active
+            ? translate('mac_vd_persistent_tip')
+            : (active ? translate('mac_vd_turn_off') : translate('mac_vd_turn_on')),
+        child: Switch(
+          value: active,
+          onChanged: _busy || (persistent && active)
+              ? null
+              : (v) => _cmd({'cmd': v ? 'on' : 'off', 'slot': slot}),
+        ),
+      ),
+      IconButton(
+          icon: const Icon(Icons.edit, size: 18),
+          tooltip: translate('Edit'),
+          onPressed: _busy ? null : () => _edit(context, s)),
+      IconButton(
+          icon: const Icon(Icons.delete_outline, size: 18),
+          tooltip: translate('Delete'),
+          onPressed: _busy ? null : () => _delete(context, s)),
+    ]).marginOnly(left: _kContentHMargin);
+  }
+
+  Future<void> _delete(BuildContext context, Map<String, dynamic> s) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(translate('Delete')),
+        content: Text(s['active'] == true
+            ? translate('mac_vd_delete_active_tip')
+            : translate('mac_vd_delete_tip')),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(translate('Cancel'))),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(translate('Delete'))),
+        ],
+      ),
+    );
+    if (ok == true) await _cmd({'cmd': 'rm', 'slot': s['slot']});
+  }
+
+  static const _presets = <List<int>>[
+    [1280, 720],
+    [1440, 900],
+    [1680, 1050],
+    [1920, 1080],
+    [1920, 1200],
+    [2560, 1440],
+    [2560, 1600],
+    [3840, 2160],
+  ];
+
+  Future<void> _edit(BuildContext context, Map<String, dynamic>? s) async {
+    final name = TextEditingController(text: s?['name'] ?? '');
+    final cw = TextEditingController(text: '${s?['w'] ?? 1920}');
+    final ch = TextEditingController(text: '${s?['h'] ?? 1080}');
+    var hidpi = s?['hidpi'] ?? true;
+    var refresh = s?['refresh'] ?? 60;
+    var persistent = s?['persistent'] ?? false;
+    var follow = s?['follow'] ?? false;
+    String preset() {
+      final k = '${cw.text}x${ch.text}';
+      return _presets.any((p) => '${p[0]}x${p[1]}' == k) ? k : 'custom';
+    }
+
+    var sel = preset();
+    String err = '';
+    final res = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setS) {
+        final w = int.tryParse(cw.text) ?? 0;
+        final h = int.tryParse(ch.text) ?? 0;
+        final hidpiAllowed = w * 2 <= 6144 && h * 2 <= 3840;
+        return AlertDialog(
+          title: Text(translate(s == null ? 'mac_vd_new' : 'mac_vd_edit')),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextField(
+                      controller: name,
+                      decoration:
+                          InputDecoration(labelText: translate('mac_vd_name'))),
+                  const SizedBox(height: 12),
+                  Row(children: [
+                    Text(translate('Resolution')),
+                    const SizedBox(width: 12),
+                    DropdownButton<String>(
+                      value: sel,
+                      items: [
+                        ..._presets.map((p) => DropdownMenuItem(
+                            value: '${p[0]}x${p[1]}',
+                            child: Text('${p[0]}×${p[1]}'))),
+                        DropdownMenuItem(
+                            value: 'custom',
+                            child: Text(translate('resolution_custom_tip'))),
+                      ],
+                      onChanged: (v) => setS(() {
+                        sel = v ?? 'custom';
+                        if (sel != 'custom') {
+                          final p = sel.split('x');
+                          cw.text = p[0];
+                          ch.text = p[1];
+                        }
+                      }),
+                    ),
+                  ]),
+                  Row(children: [
+                    SizedBox(
+                        width: 90,
+                        child: TextField(
+                            controller: cw,
+                            enabled: sel == 'custom',
+                            keyboardType: TextInputType.number,
+                            onChanged: (_) => setS(() {}))),
+                    const Text('  ×  '),
+                    SizedBox(
+                        width: 90,
+                        child: TextField(
+                            controller: ch,
+                            enabled: sel == 'custom',
+                            keyboardType: TextInputType.number,
+                            onChanged: (_) => setS(() {}))),
+                  ]),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: hidpi && hidpiAllowed,
+                    onChanged: hidpiAllowed
+                        ? (v) => setS(() => hidpi = v ?? false)
+                        : null,
+                    title: Text(translate('mac_vd_hidpi_label')),
+                  ),
+                  Row(children: [
+                    Text(translate('mac_vd_refresh')),
+                    const SizedBox(width: 12),
+                    DropdownButton<int>(
+                        value: refresh == 30 ? 30 : 60,
+                        items: const [
+                          DropdownMenuItem(value: 30, child: Text('30 Hz')),
+                          DropdownMenuItem(value: 60, child: Text('60 Hz')),
+                        ],
+                        onChanged: (v) => setS(() => refresh = v ?? 60)),
+                  ]),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: persistent,
+                    onChanged: (v) => setS(() => persistent = v ?? false),
+                    title: Text(translate('mac_vd_persistent_label')),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: follow,
+                    onChanged: (v) => setS(() => follow = v ?? false),
+                    title: Text(translate('mac_vd_follow_label')),
+                  ),
+                  if (err.isNotEmpty)
+                    Text(err, style: const TextStyle(color: Colors.red)),
+                ]),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(translate('Cancel'))),
+            TextButton(
+              onPressed: () {
+                if (w < 640 || h < 480 || w > 6144 || h > 3840) {
+                  setS(() => err = translate('mac_vd_bad_res'));
+                  return;
+                }
+                Navigator.pop(ctx, {
+                  'name': name.text.trim(),
+                  'w': w,
+                  'h': h,
+                  'hidpi': hidpi && hidpiAllowed,
+                  'refresh': refresh,
+                  'persistent': persistent,
+                  'follow': follow,
+                });
+              },
+              child: Text(translate('Save')),
+            ),
+          ],
+        );
+      }),
+    );
+    if (res == null) return;
+    if (s == null) {
+      await _cmd({'cmd': 'add', ...res});
+    } else {
+      await _cmd({'cmd': 'set', 'slot': s['slot'], ...res});
+    }
+  }
+}

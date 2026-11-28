@@ -322,6 +322,12 @@ fn displays_to_msg(displays: Vec<DisplayInfo>) -> Message {
         let m = crate::virtual_display_manager::get_platform_additions();
         pi.platform_additions = serde_json::to_string(&m).unwrap_or_default();
     }
+    // FastRustDesk: keep the toolbar's virtual display state in sync on macOS.
+    #[cfg(target_os = "macos")]
+    if crate::platform::is_installed() {
+        let m = crate::vdisplay::platform_additions();
+        pi.platform_additions = serde_json::to_string(&m).unwrap_or_default();
+    }
 
     // current_display should not be used in server.
     // It is set to 0 for compatibility with old clients.
@@ -407,7 +413,14 @@ pub(super) fn get_original_resolution(
     #[cfg(windows)]
     let is_rustdesk_virtual_display =
         crate::virtual_display_manager::rustdesk_idd::is_virtual_display(&display_name);
-    #[cfg(not(windows))]
+    // FastRustDesk: our macOS virtual displays get the same "virtual" marker, so
+    // the controlling side offers a custom resolution for them.
+    #[cfg(target_os = "macos")]
+    let is_rustdesk_virtual_display = display_name
+        .parse::<u32>()
+        .map(crate::vdisplay::is_vd)
+        .unwrap_or(false);
+    #[cfg(not(any(windows, target_os = "macos")))]
     let is_rustdesk_virtual_display = false;
     Some(if is_rustdesk_virtual_display {
         Resolution {

@@ -73,4 +73,10 @@ pub mod privacy_mode;
 #[cfg(windows)]
 pub mod virtual_display_manager;
 
+// FastRustDesk: macOS virtual displays.
+#[cfg(target_os = "macos")]
+pub mod vdisplay;
+#[cfg(target_os = "macos")]
+pub mod vdisplay_cli;
+
 mod kcp_stream;

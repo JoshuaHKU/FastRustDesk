@@ -2804,6 +2804,19 @@ impl LoginConfigHandler {
             video_ack_required: self.video_ack_enabled(),
             ..Default::default()
         };
+        // FastRustDesk: tell a macOS peer our display size, so a virtual display
+        // it creates for this session matches it (decision 3).
+        if self.conn_type == ConnType::DEFAULT_CONN {
+            if let Some(cdi) = fast_client_display_info() {
+                log::info!(
+                    "client display {}x{} @{:.2}",
+                    cdi.width,
+                    cdi.height,
+                    cdi.scale
+                );
+                lr.fast_client_display = Some(cdi).into();
+            }
+        }
         log::info!("video ack required: {}", lr.video_ack_required);
         match self.conn_type {
             ConnType::FILE_TRANSFER => lr.set_file_transfer(FileTransfer {
@@ -4454,4 +4467,72 @@ async fn udp_nat_connect(
             anyhow!(err)
         })?;
     Ok((res.1, Some(res.0), typ))
+}
+
+/// FastRustDesk: this machine's main display as logical points plus backing scale,
+/// sent in `LoginRequest.fast_client_display`.
+#[cfg(target_os = "macos")]
+fn fast_client_display_info() -> Option<ClientDisplayInfo> {
+    let d = scrap::Display::primary().ok()?;
+    let scale = d.scale().max(1.0);
+    Some(ClientDisplayInfo {
+        width: (d.width() as f64 / scale).round() as i32,
+        height: (d.height() as f64 / scale).round() as i32,
+        scale,
+        ..Default::default()
+    })
+}
+
+#[cfg(windows)]
+fn fast_client_display_info() -> Option<ClientDisplayInfo> {
+    use winapi::{
+        shared::windef::POINT,
+        um::{
+            shellscalingapi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+            winuser::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY},
+        },
+    };
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+        if mon.is_null() {
+            return None;
+        }
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(mon, &mut mi) == 0 {
+            return None;
+        }
+        let w = (mi.rcMonitor.right - mi.rcMonitor.left) as f64;
+        let h = (mi.rcMonitor.bottom - mi.rcMonitor.top) as f64;
+        let (mut dx, mut dy) = (96u32, 96u32);
+        let scale = if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy) == 0 && dx > 0 {
+            dx as f64 / 96.0
+        } else {
+            1.0
+        };
+        // In a per-monitor DPI aware process rcMonitor is in physical pixels.
+        Some(ClientDisplayInfo {
+            width: (w / scale).round() as i32,
+            height: (h / scale).round() as i32,
+            scale,
+            ..Default::default()
+        })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fast_client_display_info() -> Option<ClientDisplayInfo> {
+    let d = scrap::Display::primary().ok()?;
+    Some(ClientDisplayInfo {
+        width: d.width() as i32,
+        height: d.height() as i32,
+        scale: 1.0,
+        ..Default::default()
+    })
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn fast_client_display_info() -> Option<ClientDisplayInfo> {
+    // Not available from Rust here; the peer falls back to its default size.
+    None
 }

@@ -20,6 +20,19 @@ fn build_mac() {
     }
     b.flag("-std=c++17").file(file).compile("macos");
     println!("cargo:rerun-if-changed={}", file);
+
+    // FastRustDesk: virtual displays (src/vdisplay.rs). Plain Objective-C with ARC,
+    // kept apart from macos.mm, which is Objective-C++ without ARC.
+    let vd = "src/platform/macos_vdisplay.m";
+    cc::Build::new()
+        .file(vd)
+        .flag("-fobjc-arc")
+        .flag("-fmodules")
+        .compile("macos_vdisplay");
+    for fw in ["Foundation", "AppKit", "CoreGraphics", "IOKit"] {
+        println!("cargo:rustc-link-lib=framework={}", fw);
+    }
+    println!("cargo:rerun-if-changed={}", vd);
 }
 
 #[cfg(all(windows, feature = "inline"))]

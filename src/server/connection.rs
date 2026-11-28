@@ -1926,6 +1926,20 @@ impl Connection {
                 json!(privacy_mode::get_supported_privacy_mode_impl()),
             );
         }
+        // FastRustDesk: macOS virtual displays. Runs before the display list is
+        // built so a headless Mac has something to show, and before the additions
+        // are reported so the toolbar sees the result.
+        #[cfg(target_os = "macos")]
+        let vdisplay_initial = if self.is_remote() {
+            crate::vdisplay::on_login(self.inner.id(), self.lr.fast_client_display.as_ref())
+        } else {
+            None
+        };
+        #[cfg(target_os = "macos")]
+        if crate::platform::is_installed() {
+            platform_additions.insert("is_installed".into(), json!(true));
+            platform_additions.extend(crate::vdisplay::platform_additions());
+        }
 
         #[cfg(any(target_os = "windows", feature = "unix-file-copy-paste"))]
         {
@@ -2079,6 +2093,14 @@ impl Connection {
                     }
                     // A separate primary lookup here could race with display hot-plug.
                     self.display_idx = primary_display_idx;
+                    // FastRustDesk decision 2: start on the persistent virtual display.
+                    #[cfg(target_os = "macos")]
+                    if let Some(vd) = vdisplay_initial {
+                        if let Some(i) = displays.iter().position(|d| d.name == vd.to_string()) {
+                            log::info!("vdisplay: session starts on display {} (id {})", i, vd);
+                            self.display_idx = i;
+                        }
+                    }
                     pi.displays = displays;
                     pi.current_display = self.display_idx as _;
                     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -3683,6 +3705,12 @@ impl Connection {
                             self.toggle_virtual_display(t).await;
                         }
                     }
+                    #[cfg(target_os = "macos")]
+                    Some(misc::Union::ToggleVirtualDisplay(t)) => {
+                        if !self.view_camera && self.keyboard {
+                            self.toggle_mac_virtual_display(t).await;
+                        }
+                    }
                     Some(misc::Union::TogglePrivacyMode(t)) => {
                         if !self.view_camera {
                             self.toggle_privacy_mode(t).await;
@@ -4582,6 +4610,27 @@ impl Connection {
         }
     }
 
+    /// FastRustDesk: `ToggleVirtualDisplay` on a macOS controlled side.
+    #[cfg(target_os = "macos")]
+    async fn toggle_mac_virtual_display(&mut self, t: ToggleVirtualDisplay) {
+        let id = self.inner.id();
+        let r = tokio::task::spawn_blocking(move || crate::vdisplay::toggle(id, t.display, t.on))
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()));
+        if let Err(text) = r {
+            log::warn!("vdisplay: toggle {} {} refused: {}", t.display, t.on, text);
+            let mut msg_out = Message::new();
+            msg_out.set_message_box(MessageBox {
+                msgtype: "nook-nocancel-hasclose".to_owned(),
+                title: "Virtual display".to_owned(),
+                text,
+                link: "".to_owned(),
+                ..Default::default()
+            });
+            self.send(msg_out).await;
+        }
+    }
+
     async fn toggle_privacy_mode(&mut self, t: TogglePrivacyMode) {
         if t.on {
             self.turn_on_privacy(t.impl_key).await;
@@ -4597,6 +4646,19 @@ impl Connection {
                 let display_idx = d.unwrap_or(self.display_idx);
                 if let Some(display) = displays.get(display_idx) {
                     let name = display.name();
+                    // FastRustDesk: our macOS virtual displays are resized by
+                    // re-declaring their modes, not by the generic mode switch.
+                    #[cfg(target_os = "macos")]
+                    if let Ok(id) = name.parse::<u32>() {
+                        if let Some(r) =
+                            crate::vdisplay::set_resolution(id, r.width as _, r.height as _)
+                        {
+                            if let Err(e) = r {
+                                log::error!("vdisplay: change resolution failed: {}", e);
+                            }
+                            return;
+                        }
+                    }
                     #[cfg(windows)]
                     if let Some(_ok) =
                         virtual_display_manager::rustdesk_idd::change_resolution_if_is_virtual_display(
@@ -6910,6 +6972,10 @@ mod raii {
                 .iter()
                 .filter(|c| c.conn_type == AuthConnType::Remote)
                 .count();
+            #[cfg(target_os = "macos")]
+            if self.1 == AuthConnType::Remote {
+                crate::vdisplay::on_conn_closed(self.0, remote_count);
+            }
             if remote_count == 0 {
                 #[cfg(any(target_os = "windows", target_os = "linux"))]
                 {

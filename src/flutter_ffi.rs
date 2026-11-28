@@ -2811,6 +2811,25 @@ pub fn main_get_printer_names() -> SyncReturn<String> {
 }
 
 pub fn main_get_common(key: String) -> String {
+    // FastRustDesk: macOS virtual displays, owned by the --server process.
+    // "vdisplay-status" -> status JSON; "vdisplay-cmd:<json>" -> "OK:..."/"ERR:...".
+    if key == "vdisplay-status" || key.starts_with("vdisplay-cmd:") {
+        #[cfg(target_os = "macos")]
+        {
+            let timeout = if key == "vdisplay-status" {
+                3_000
+            } else {
+                20_000
+            };
+            return match crate::ipc::vdisplay_request(&key, timeout) {
+                Ok(Some(v)) => v,
+                Ok(None) => "ERR:server does not support virtual displays".to_owned(),
+                Err(e) => format!("ERR:{}", e),
+            };
+        }
+        #[cfg(not(target_os = "macos"))]
+        return "".to_owned();
+    }
     if key == "is-printer-installed" {
         #[cfg(target_os = "windows")]
         {

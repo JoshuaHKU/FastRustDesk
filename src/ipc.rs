@@ -780,6 +780,28 @@ impl Drop for CheckIfRestart {
     }
 }
 
+#[cfg(target_os = "macos")]
+async fn vdisplay_ipc(name: &str) -> Option<String> {
+    let name = name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        if name == "vdisplay-status" {
+            crate::vdisplay::status_json()
+        } else {
+            match crate::vdisplay::command(&name["vdisplay-cmd:".len()..]) {
+                Ok(t) => format!("OK:{}", t),
+                Err(e) => format!("ERR:{}", e),
+            }
+        }
+    })
+    .await
+    .ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn vdisplay_ipc(_name: &str) -> Option<String> {
+    None
+}
+
 async fn handle(data: Data, stream: &mut Connection) {
     match data {
         Data::SystemInfo(_) => {
@@ -940,6 +962,13 @@ async fn handle(data: Data, stream: &mut Connection) {
                     value = Some(Config::get_unlock_pin());
                 } else if name == "trusted-devices" {
                     value = Some(Config::get_trusted_devices_json());
+                } else if cfg!(target_os = "macos")
+                    && (name == "vdisplay-status" || name.starts_with("vdisplay-cmd:"))
+                {
+                    // FastRustDesk: macOS virtual displays live in this (--server)
+                    // process; the settings page and `--vdisplay` reach them here.
+                    // A command is a read so its result comes back on the same call.
+                    value = vdisplay_ipc(&name).await;
                 } else {
                     value = None;
                 }
@@ -1586,6 +1615,13 @@ where
 #[tokio::main(flavor = "current_thread")]
 pub async fn get_config(name: &str) -> ResultType<Option<String>> {
     get_config_async(name, 1_000).await
+}
+
+/// FastRustDesk: a virtual-display status read or command (`vdisplay-status`,
+/// `vdisplay-cmd:<json>`), with a timeout long enough to create a display.
+#[tokio::main(flavor = "current_thread")]
+pub async fn vdisplay_request(name: &str, ms_timeout: u64) -> ResultType<Option<String>> {
+    get_config_async(name, ms_timeout).await
 }
 
 async fn get_config_async(name: &str, ms_timeout: u64) -> ResultType<Option<String>> {

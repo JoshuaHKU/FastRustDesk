@@ -4207,6 +4207,16 @@ class PeerInfo with ChangeNotifier {
       platformAdditions[kPlatformAdditionsIddImpl] == 'rustdesk_idd';
   bool get isAmyuniIdd =>
       platformAdditions[kPlatformAdditionsIddImpl] == 'amyuni_idd';
+  // FastRustDesk: macOS virtual displays.
+  bool get isMacVirtualDisplay =>
+      platformAdditions[kPlatformAdditionsIddImpl] == kIddImplMacCgvd;
+  bool get macVdAllowRemote =>
+      platformAdditions[kPlatformAdditionsMacVdAllowRemote] == true;
+  List<Map<String, dynamic>> get macVdSlots {
+    final v = platformAdditions[kPlatformAdditionsMacVdSlots];
+    if (v is! List) return [];
+    return v.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
 
   Display? tryGetDisplay({int? display}) {
     if (displays.isEmpty) {

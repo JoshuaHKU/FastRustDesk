@@ -88,6 +88,16 @@ message LoginRequest {
   string my_platform = 13;
   bytes hwid = 14;
   string avatar = 17;
+  // FastRustDesk extension: the controlling side's main display, so a macOS
+  // controlled side can size a virtual display to match. Old peers ignore it.
+  ClientDisplayInfo fast_client_display = 1001;
+}
+
+// FastRustDesk extension (see LoginRequest.fast_client_display).
+message ClientDisplayInfo {
+  int32 width = 1;   // logical width in points
+  int32 height = 2;  // logical height in points
+  double scale = 3;  // backing scale: 2.0 on Retina, 1.5 for Windows at 150%
 }
 
 message Terminal {

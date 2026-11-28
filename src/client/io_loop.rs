@@ -99,8 +99,10 @@ struct ParsedPeerInfo {
 impl ParsedPeerInfo {
     fn is_support_virtual_display(&self) -> bool {
         self.is_installed
-            && self.platform == "Windows"
-            && (self.idd_impl == "rustdesk_idd" || self.idd_impl == "amyuni_idd")
+            && ((self.platform == "Windows"
+                && (self.idd_impl == "rustdesk_idd" || self.idd_impl == "amyuni_idd"))
+                // FastRustDesk: macOS virtual displays (CGVirtualDisplay).
+                || (self.platform == "Mac OS" && self.idd_impl == "mac_cgvd"))
     }
 }
 
